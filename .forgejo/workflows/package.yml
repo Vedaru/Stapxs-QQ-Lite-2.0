@@ -171,6 +171,33 @@ jobs:
             echo "::warning::tauri build exited $status; publishing the bundles it did produce"
           echo "$found"
 
+      # Before publishing, and not after: the artifact is the only copy that
+      # exists anywhere until the release upload succeeds.
+      #
+      # This exists because the release is not actually downloadable. The
+      # Forgejo instance sits behind an SSO reverse proxy that 302s every path
+      # outside /api/ to auth.vedaru.cn, so a release asset cannot be fetched
+      # with a credential -- `Authorization: token`, basic auth and ?token= all
+      # come back as the login page -- and no /api/ route streams asset
+      # content. The runner is on the same host as the author, so the copy is
+      # a local `install(1)` with no network in it at all, which also skips the
+      # slow uplink. STAPXS_ARTIFACT_DIR moves the destination.
+      - name: Stage the bundles for a local install
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/stapxs-src"
+          dest="${STAPXS_ARTIFACT_DIR:-$HOME/Downloads}"
+          mkdir -p "$dest"
+          staged=0
+          while IFS= read -r f; do
+            name=$(basename "$f" | tr ' ' '-')
+            install -m 0644 "$f" "$dest/$name"
+            echo "staged $dest/$name ($(du -h "$f" | cut -f1))"
+            staged=$((staged + 1))
+          done < <(find "$src/src/tauri/target" -type f -path '*/bundle/*' \
+                        \( -name '*.deb' -o -name '*.AppImage' \) | sort)
+          [ "$staged" -gt 0 ] || { echo "nothing was staged" >&2; exit 1; }
+
       - name: Publish the bundles to a Forgejo release
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
