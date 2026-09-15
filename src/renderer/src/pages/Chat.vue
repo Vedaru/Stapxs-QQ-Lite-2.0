@@ -61,27 +61,40 @@
                 <font-awesome-icon :icon="['fas', 'ellipsis-vertical']" @click="openChatInfoPan" />
             </div>
         </div>
-        <!-- 加载中指示器 -->
+        <!-- 加载中指示器。外层只占位（高度恒为 0），胶囊绝对定位浮在列表上方，
+             显示 / 隐藏不再撑动下面的消息列表。 -->
         <div :class=" 'loading' + (uiStore.nowGetHistory && uiStore.canLoadHistory ? ' show' : '')">
-            <font-awesome-icon :icon="['fas', 'spinner']" />
-            <span>{{ $t('加载中') }}</span>
+            <div class="loading-pill">
+                <font-awesome-icon :icon="['fas', 'spinner']" />
+                <span>{{ $t('加载中') }}</span>
+            </div>
         </div>
-        <!-- 消息显示区 -->
+        <!-- 消息显示区。这里原本用内联样式把这个容器设成了平滑滚动：容器级一旦设上，
+             所有程序化的 scrollTop 赋值都会变成一段动画，包括「上拉加载历史时把视口
+             钉在原地」的那几次补偿。补偿只要不是瞬时完成，就会和用户自己的手势、以及
+             新插入内容的高度变化三者互相追着跑 —— 这正是上拉抖动的主因。平滑只该用在
+             「主动跳转」上，所以改成由 scrollTo() 的 behavior 参数逐次指定。
+             （刻意不逐字写出被删掉的那条声明，免得 grep 审样式时匹配到注释。） -->
         <div id="msgPan" ref="msgPan" class="chat"
-            style="scroll-behavior: smooth"
             @scroll="chatScroll($event, details[3].open)">
             <template v-if="!details[3].open">
-                <div v-if="!uiStore.canLoadHistory" class="note note-nomsg">
-                    <hr>
-                    <a>{{ $t('没有更多消息了') }}</a>
+                <!-- 列表顶部这组状态行（「加载中」时间戳、「没有更多消息了」、「获取历史
+                     记录失败」）。这一层的高度是常数：行只在自己内部绝对定位地显隐，不
+                     参与流内高度 —— 契约写在 chat.css 的 .chat-history-status 上。正因
+                     为高度从此不变，那组「按高度差反向补 scrollTop」的 watch 已经删掉。 -->
+                <div class="chat-history-status">
+                    <div v-if="!uiStore.canLoadHistory" class="note note-nomsg">
+                        <hr>
+                        <a>{{ $t('没有更多消息了') }}</a>
+                    </div>
+                    <div v-if="uiStore.loadHistoryFail" class="note note-nomsg">
+                        <hr>
+                        <a>{{ $t('获取历史记录失败') }}</a>
+                    </div>
+                    <!-- 时间戳，在下滑加载的时候会显示，方便在大段的相连消息上让用户知道消息时间 -->
+                    <NoticeBody v-if="uiStore.nowGetHistory && list.length > 0"
+                        :data="{ sub_type: 'time', time: list[0].time }" />
                 </div>
-                <div v-if="uiStore.loadHistoryFail" class="note note-nomsg">
-                    <hr>
-                    <a>{{ $t('获取历史记录失败') }}</a>
-                </div>
-                <!-- 时间戳，在下滑加载的时候会显示，方便在大段的相连消息上让用户知道消息时间 -->
-                <NoticeBody v-if="uiStore.nowGetHistory && list.length > 0"
-                    :data="{ sub_type: 'time', time: list[0].time }" />
                 <TransitionGroup :name="settingsStore.sysConfig.opt_fast_animation ? '' : 'msglist'" tag="div">
                     <template v-for="(msgIndex, index) in list">
                         <!-- 时间戳 -->
@@ -853,6 +866,11 @@ onMounted(() => {
             updateList(newIds.length, oldIds.length)
         },
     )
+    // 这里原本有一组 watch(nowGetHistory / canLoadHistory / loadHistoryFail)，在
+    // 状态行显隐时按 scrollHeight 的高度差反向补一次 scrollTop。那个补丁是为
+    // 「状态行是流内元素、出现即撑高」服务的；现在 .chat-history-status 高度恒定
+    // （见 chat.css），撑高这件事已经不存在，补丁也就多余了 —— 而且它和 updateList
+    // 里的补偿会在同一次 flush 里各算一遍同一个高度差，本身就是个多补一次的隐患。
     watch(() => chat.info.jin_info.list.length, () => {
             tags.value.isJinLoading = false
         },
@@ -1150,14 +1168,18 @@ function fillSeqGaps(anchorMsgIds: string[]) {
 
 function scrollTo(where: number | undefined, showAnimation = true) {
     const pan = document.getElementById('msgPan')
-    if (pan !== null && where) {
-        if (showAnimation === false) {
-            pan.style.scrollBehavior = 'unset'
-        } else {
-            pan.style.scrollBehavior = 'smooth'
-        }
-        pan.scrollTop = where
-        pan.style.scrollBehavior = 'smooth'
+    // 只挡 undefined，不能写成 `&& where` —— 0 是合法目标位置。手动补偿算出
+    // 的目标值恰好为 0（滚动位置和高度变化互相抵消）时，真值判断会把它当空值
+    // 跳过，滚动位置就停在上一次补偿的地方，反而留下一次跳动。
+    if (pan !== null && where !== undefined) {
+        // 用 behavior 逐次指定，别再去改容器的 scroll-behavior：
+        // 以前是「先把容器改成 unset → 赋值 → 再改回 smooth」，但那既依赖样式
+        // 已经在赋值前刷新，又会把容器的全局行为留成 smooth，害得 2500 行那种
+        // 只传一个参数的调用悄悄变成动画滚动。补偿必须瞬时，主动跳转才要平滑。
+        pan.scrollTo({
+            top: where,
+            behavior: showAnimation ? 'smooth' : 'instant',
+        })
     }
 }
 
@@ -1174,12 +1196,37 @@ function scrollToMsgLocal(message_id: string) {
     }
 }
 
-function imgLoadedScroll(height: number) {
+/**
+ * 图片解码完成、把消息撑高之后补一次滚动。
+ * @param height 图片撑开的高度
+ * @param imgTop 图片顶边的位置（视口坐标，由 MsgBody 随事件带出）
+ *
+ * 这是 WebKitGTK 版「滚动锚定」的手写替身 —— chat.css 里 `.chat-pan > div.chat`
+ * 为什么关掉 overflow-anchor，那条注释解释了。锚点是面板顶边上那一点内容，判据
+ * 只有一条：图片解码前高度是 0，所以顶上那点内容要么就是图片本身，要么在图片下沿
+ * 更靠下的地方，绝不会在图片上方。
+ *
+ * - 图片顶边在面板顶边以上（imgTop <= panTop）：顶上那点内容是图片或更靠下的东西，
+ *   图片一撑开，它们整体下移整整一个 height，所以要补回整个 height。
+ * - 图片顶边在面板顶边以下：顶上那点内容在图片上方，压根没动；补了就是把视图往上
+ *   拽，所以什么都不做。
+ *
+ * 判据必须是台阶，不能是「图片落在顶边以上的那一截」（min(height, panTop - imgTop)）。
+ * 那一截是图片自身的高度分布，不是锚点的位移量：顶边以上的那部分图片高度，本来就
+ * 是解码前不存在、解码后凭空多出来的，它下面的内容全都被它推了一整个 height。
+ * 用那一截衡量会系统性补少 —— imgTop = panTop - 50、height = 200 时只补 50、
+ * 剩 150 的跳；imgTop == panTop 时干脆补 0、整 200 全跳，而那正是上拉翻历史时
+ * 最常见的位置：旧消息的图片刚好从视口顶边露头。
+ */
+function imgLoadedScroll(height: number, imgTop?: number) {
     const pan = document.getElementById('msgPan')
     if(pan) {
         if(list.length <= 20 && !tags.value.showBottomButton) {
             scrollBottom()
-        } else {
+        } else if (imgTop === undefined) {
+            // 拿不到顶边位置（老调用路径）就退回原来的行为
+            scrollTo(pan.scrollTop + height, false)
+        } else if (imgTop <= pan.getBoundingClientRect().top) {
             scrollTo(pan.scrollTop + height, false)
         }
     }
@@ -2423,12 +2470,17 @@ function updateList(newLength: number, oldLength: number) {
     const pan = document.getElementById('msgPan')
     if (pan !== null) {
         const height = pan.scrollHeight
+        const top = pan.scrollTop
         nextTick(() => {
             const newPan = document.getElementById('msgPan')
             if (newPan !== null) {
                 if (uiStore.nowGetHistory) {
+                    // 让视口里那一屏保持不动：插入到上方的高度（新高度 − 旧高度）
+                    // 必须加在原来的滚动位置上，不能只写差值 —— 只写差值等于假设
+                    // 当前恰好停在顶部，而加载开始时浏览器可能已经因为「加载中」
+                    // 时间戳之类的插入自己调过 scrollTop，两边就对不上了。
                     scrollTo(
-                        newPan.scrollHeight - height,
+                        top + (newPan.scrollHeight - height),
                         false,
                     )
                 }
@@ -2766,12 +2818,18 @@ function exitWin() {
 </script>
 
 <style scoped>
-    /* 消息动画。enter 是「从左 16px 浮入 + 淡入」，move 是列表重排时的 FLIP
-     * 位移 —— 两种语义，各写各的清单。 */
-    .msglist-move {
-        transition: transform var(--md-motion-change);
-    }
-
+    /* 消息动画。enter 是「从左 16px 浮入 + 淡入」。
+     *
+     * 这里刻意不写 .msglist-move —— 也就是不给 Vue 的 TransitionGroup 提供
+     * FLIP 重排动画。上拉加载历史时会把旧消息 prepend 到列表头部，代码同时
+     * 手动补偿滚动位置（Chat.vue 的 updateList / msg.ts 的 getChatHistory 都
+     * 在算 scrollTop += 新增高度）。FLIP 的做法与原坐标不动、再用 transform
+     * 把元素「按住」——两者补偿的是同一个位移，叠加的结果就是内容先瞬间上跳
+     * 一个高度、再花 200ms 滑回来，也就是上拉加载时看到的抖动。
+     *
+     * 没有这条规则时，TransitionGroup 在运行时会发现 move class 不产生
+     * transform 过渡（vue runtime-dom 的 hasCSSTransform），直接跳过 FLIP，
+     * 于是只剩滚动补偿这一份，位置纹丝不动。enter / leave 不受影响。 */
     .msglist-enter-active {
         transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
     }

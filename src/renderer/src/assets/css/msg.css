@@ -645,14 +645,17 @@ span.user-title.robot {
     background: var(--color-blue);
 }
 
-.loading {
-    opacity: 0.0;
-}
+/* 这里原本有一条把 .loading 元素整体 opacity 归零的规则，还配了一条想把它
+ * 拉回来的子选择器 —— 后者永远匹配不到，因为 .show 和 .loading 挂在同一个
+ * 元素上，不是父子关系。`.loading` 又是个到处都在用的通用类名，而 opacity
+ * 加在祖先上等于给整棵子树做组透明，后代自己设 opacity 也救不回来，于是聊天
+ * 页的「加载中」胶囊（.chat-pan 靠 .loading-pill 的 opacity / transform 显隐）
+ * 就被按死在不可见状态。显隐本来该由各自的规则管（.viewer.loading 自己写了
+ * opacity: 1，.voice-msg、.bot-status 也都有各自的写法），所以那两条都删掉。
+ * 旋转动画保留：.viewer.loading > svg 还指着它。
+ * 注：这里刻意不逐字引用被删掉的两条声明，免得以后 grep 审规则时又匹配到注释。 */
 .loading > svg {
     animation: rotate var(--md-motion-loop) infinite;
-}
-.loading > .show{
-    opacity: 1.0;
 }
 
 .msg-raw-forward {

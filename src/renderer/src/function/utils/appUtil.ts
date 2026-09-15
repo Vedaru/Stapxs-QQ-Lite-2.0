@@ -59,13 +59,12 @@ export function scrollToMsg(seqName: string, showAnimation: boolean, showHighlig
     if (msg) {
         const pan = document.getElementById('msgPan')
         if (pan !== null) {
-            if (showAnimation === false) {
-                pan.style.scrollBehavior = 'unset'
-            } else {
-                pan.style.scrollBehavior = 'smooth'
-            }
-            pan.scrollTop = msg.offsetTop - msg.offsetHeight + 10
-            pan.style.scrollBehavior = 'smooth'
+            // 同 Chat.vue 的 scrollTo：逐次指定 behavior，不要改容器的
+            // scroll-behavior —— 那会留下全局 smooth，把别人的补偿滚动也变成动画。
+            pan.scrollTo({
+                top: msg.offsetTop - msg.offsetHeight + 10,
+                behavior: showAnimation ? 'smooth' : 'instant',
+            })
             if (showHighlight) {
                 msg.style.transition = 'background 1s'
                 msg.style.background = 'rgba(0, 0, 0, 0.06)'

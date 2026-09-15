@@ -122,6 +122,12 @@ input {
     padding-top: 90px;
     z-index: 1;
     flex: 1;
+    /* 关掉浏览器自带的滚动锚定。WebKit 压根没实现这个特性，所以这个项目一直
+     * 靠 JS 手动补偿（updateList 里按新增高度改 scrollTop、imgLoadedScroll 在
+     * 图片撑开时补高度）。而 Chromium 会在布局时自己再补一次 —— 同一张图片的
+     * 高度被算了两次，上拉加载历史时列表就会跳。关掉它，手动补偿成为唯一来源，
+     * 各个内核行为也一致。 */
+    overflow-anchor: none;
 }
 .chat-padding {
     display: block;
@@ -131,6 +137,36 @@ input {
 }
 .chat-pan > div.chat::-webkit-scrollbar {
     background: transparent;
+}
+
+/* 消息列表顶部的状态区：「加载中」时间戳、「没有更多消息了」、「获取历史记录失败」。
+ *
+ * 这块以前就是普通的流内元素，状态行随加载状态出现和消失，每出现一次就把下面所有
+ * 消息往下推 40~100px、消失时再拉回来 —— 上拉翻历史时「所有消息一起抖」的直接来源
+ * 一直是这里（同一个毛病上面 .chat-pan > div.loading 已经修过一次，这块当时漏了）。
+ * 当时的对策是再用一次 scrollTop 去反向抵消，这里改成从根上不让高度变：外层永远占住
+ * 同一块高度，状态行绝对定位在里面，显隐只切各自的可见性，滚动内容的总高度从头到尾
+ * 是常数，也就没有需要补偿的位移了。它和 .loading-pill 的差别只在于必须占住高度 ——
+ * 这几行是内容的一部分，得跟着列表一起滚。
+ *
+ * 高度要容得下最高的那一行；行自带的上下边距必须归零，否则会溢出这块区域、盖到第一
+ * 条消息上。「没有更多消息了」自带 width: 80%，靠 align-items: center 在这一列里居中
+ * —— 也正因为有它，时间戳那颗胶囊才会保持「包住文字」而不是被拉成整条。 */
+.chat-history-status {
+    position: relative;
+    height: 3rem;
+}
+.chat-history-status > * {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
 }
 
 .chat-pan > div.new-msg {
@@ -253,23 +289,37 @@ input {
     height: 20px;
     margin: 10px;
 }
+/* 加载指示器。它排在 flex 列里消息列表的前面，原来是靠 height: 0 → unset 加
+ * padding 展开的 —— 一展开就把 #msgPan 连同里面的消息整体往下推约 40px，加载
+ * 开始和结束各推一次，这就是上拉加载历史时「所有消息一起抖」的来源。
+ * 现在外层高度恒为 0（布局自始至终不变），胶囊由 .loading-pill 绝对定位浮在
+ * 列表上方，显隐只切状态。 */
 .chat-pan > div.loading {
-    background: var(--color-card-1);
     margin: -10px 15px 15px 15px;
-    justify-content: center;
-    align-items: center;
-    /* .show 里 height 从 0 变成 unset：height:auto 本来就不可过渡，`all` 在这条
-     * 上唯一真正生效的是内边距。列出来免得读的人以为高度在动。 */
-    transition: padding var(--md-motion-enter);
-    border-radius: 7px;
-    overflow: hidden;
-    display: flex;
-    padding: 0;
+    position: relative;
     height: 0;
+    z-index: 3;
 }
-.chat-pan > div.loading.show {
-    height: unset;
+
+.chat-pan > div.loading > div.loading-pill {
+    background: var(--color-card-1);
+    transform: translateY(calc(-1 * var(--md-motion-distance-short)));
+    transition: opacity var(--md-motion-enter), transform var(--md-motion-enter);
+    justify-content: center;
+    border-radius: 7px;
+    align-items: center;
+    position: absolute;
     padding: 10px;
+    display: flex;
+    opacity: 0;
+    right: 0;
+    left: 0;
+    top: 0;
+}
+
+.chat-pan > div.loading.show > div.loading-pill {
+    transform: translateY(0);
+    opacity: 1;
 }
 @-webkit-keyframes rotate {
     from {

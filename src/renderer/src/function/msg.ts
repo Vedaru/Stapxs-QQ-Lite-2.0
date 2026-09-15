@@ -40,7 +40,7 @@ import {
     sendIdentifyData,
     sendStatEvent,
 } from '@renderer/function/utils/appUtil'
-import { reactive, markRaw, nextTick } from 'vue'
+import { reactive, markRaw } from 'vue'
 import { PopInfo, PopType, Logger, LogType } from './base'
 import { Connector, login, saveConnectionToHistory } from './connect'
 import {
@@ -906,21 +906,12 @@ const msgFunctions = {
             uiStore.nowGetHistory = false
             return
         }
-        const pan = document.getElementById('msgPan')
-        if (pan) {
-            const oldScrollHeight = pan.scrollHeight
-            saveMsg(msg, 'top').then(() => {
-                nextTick(() => {
-                    setTimeout(() => {
-                        logger.debug(`滚动前高度：${oldScrollHeight}，当前高度：${pan.scrollHeight}，滚动位置：${pan.scrollHeight - oldScrollHeight}`)
-                        pan.style.scrollBehavior = 'unset'
-                        // 纠正滚动位置
-                        pan.scrollTop = pan.scrollHeight - oldScrollHeight
-                        pan.style.scrollBehavior = 'smooth'
-                    }, 200);
-                })
-            })
-        }
+        // 滚动位置的修正在消息列表的 watcher 里做（Chat.vue 的 updateList）：
+        // 它在列表变更的同一个 tick 内按新增高度补偿 scrollTop。这里原本还有
+        // 一份 setTimeout(200) 的补偿，会在 200ms 后再写一次 scrollTop —— 那时
+        // 「加载中」时间戳已经被移除、内容高度已经缩回，算出来的值和第一次不
+        // 一样，等于在抖动之后又补跳一下。保留一份即可。
+        saveMsg(msg, 'top')
     },
 
     getChatHistoryOnMsg: (

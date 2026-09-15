@@ -10,7 +10,11 @@
 -->
 
 <template>
-    <div :id="'chat-' + data.message_id"
+    <!-- type === 'body' 是「被引用的消息副本」（回复引用、原始消息预览），同一条
+         消息会在聊天列表里再渲染一次。两处都挂 chat-* id 的话，scrollToMsg 用
+         getElementById 取到的是 DOM 里靠前的那个副本，滚动位置就跳到了引用块
+         里。只给列表里那一份发 id。 -->
+    <div :id="type === 'body' ? undefined : 'chat-' + data.message_id"
         ref="msgMain"
         v-menu.prevent="event => $emit('showMenu', event, data)"
         :class="[
@@ -83,7 +87,7 @@
                 <template v-else-if="!hasCard()">
                     <div v-for="(item, index) in data.message"
                         :key="data.message_id + '-m-' + index"
-                        :class="View.isMsgInline(item.type) ? 'msg-inline' : ''">
+                        :class="{ 'msg-inline': View.isMsgInline(item.type) }">
                         <div v-if="item.type === undefined" />
                         <span v-else-if="isDebugMsg" class="msg-text">{{ item }}</span>
                         <template v-else-if="item.type == 'text'">
@@ -95,15 +99,19 @@
                             :id="getMdHTML(item.content, 'msg-md-' + data.message_id)"
                             class="msg-md" />
                         <img v-else-if="item.type == 'image' && item.file == 'marketface'"
-                            :class=" imgStyle(data.message.length, Number(index), true) + ' msg-mface'"
+                            :class=" imgStyle(data.message.length, Number(index), true) + ' msg-mface' + preImgClass(item.url)"
                             :src="item.url"
                             :alt="item.summary"
+                            :data-img-url="item.url"
+                            v-bind="preSize(item.url)"
                             @load="imageLoaded"
                             @error="imgLoadFail">
                         <img v-else-if="item.type == 'mface'"
-                            :class=" imgStyle(data.message.length, Number(index), true) + ' msg-mface'"
+                            :class=" imgStyle(data.message.length, Number(index), true) + ' msg-mface' + preImgClass(item.url)"
                             :src="item.url"
                             :alt="item.summary"
+                            :data-img-url="item.url"
+                            v-bind="preSize(item.url)"
                             @load="imageLoaded"
                             @error="imgLoadFail">
                         <template v-else-if="item.type == 'image'">
@@ -121,9 +129,11 @@
                             <img v-show="!shouldShowImagePlaceholder(item, Number(index))"
                                 :title="(!item.summary || item.summary == '') ? $t('预览图片') : item.summary"
                                 :alt="$t('图片')"
-                                :class=" imgStyle(data.message.length, Number(index), isFace(item))"
+                                :class=" imgStyle(data.message.length, Number(index), isFace(item)) + preImgClass(item.url)"
                                 :src="getImgSrc(item.url)"
                                 data-type="image"
+                                :data-img-url="item.url"
+                                v-bind="preSize(item.url)"
                                 @load="imageLoaded"
                                 @error="imgLoadFail"
                                 @click="imgClick(item.url)">
@@ -282,7 +292,6 @@
                         <div :class="'bar' + (isMe ? ' me' : '')" />
                         <div>
                             <img v-if="pageViewInfo.img !== undefined"
-                                :id="data.message_id + '-linkview-img'"
                                 alt="预览图片"
                                 title="查看图片"
                                 :src="pageViewInfo.img"
@@ -377,7 +386,6 @@
                 </TransitionGroup>
             </div>
         </div>
-        <code style="display: none">{{ data.raw_message }}</code>
     </div>
 </template>
 
@@ -391,7 +399,13 @@ import { Connector } from '@renderer/function/connect'
 import { useSettingsStore } from '@renderer/state/settings'
 import { Logger, LogType, PopInfo, PopType } from '@renderer/function/base'
 import { StringifyOptions } from 'querystring'
-import { getMsgRawTxt, pokeAnime } from '@renderer/function/utils/msgUtil'
+import {
+    getMsgRawTxt,
+    pokeAnime,
+    getImageInfo,
+    rememberImageSize,
+    rememberImageTone,
+} from '@renderer/function/utils/msgUtil'
 import {
     isRobot,
     openLink,
@@ -636,6 +650,57 @@ function imgStyle(length: number, at: number, isFace: boolean) {
     return style
 }
 
+/**
+ * 图片按 max-height: 35vh 缩放之后该有的宽度，也就是 --width 的取值。
+ * imageLoaded 量完自然尺寸要用一次，模板里提前占位也要用一次 —— 这个算法只留一份，
+ * 免得两处各算各的、日后改了一处漏了另一处。
+ */
+function scaledImageWidth(naturalWidth: number, naturalHeight: number) {
+    const vh = document.documentElement.clientHeight || document.body.clientHeight
+    if (naturalHeight <= vh * 0.35) return naturalWidth
+    return (naturalWidth * (vh * 0.35)) / naturalHeight
+}
+
+/** 长图（宽高比 > 2.5）的判据。宽高比在解码前就知道，所以这个判断能提前做。 */
+function isLongImage(url: string) {
+    const info = getImageInfo(url)
+    return info !== undefined && info.h / info.w > 2.5
+}
+
+/**
+ * 已经量到尺寸的图片，提前挂上的 class。.long-img 是固定尺寸（width 20vw /
+ * height 40vh / object-fit: cover），晚一步挂就等于解码之后再把布局翻一次。
+ *
+ * 这里是这两个 class 的唯一来源：解码后的 imageLoaded 不再自己 classList.add，
+ * 否则模板下一次重渲染时 Vue 会拿绑定值整个覆盖 className，把它抹掉。
+ */
+function preImgClass(url: string) {
+    if (!isLongImage(url)) return ''
+    return getImageInfo(url)?.light ? ' long-img light' : ' long-img'
+}
+
+/**
+ * 已经量到尺寸的图片，解码之前就把占位所需的属性交出去。
+ *
+ * width / height 属性让浏览器提前按正确比例占住框（比例来自属性，尺寸再受
+ * max-width / max-height 约束），解码完成也不再改变布局 —— 这就是「先用盒子把位置
+ * 占住」，只不过盒子的比例是真的量出来的、不是猜的。没量到就一个属性都不给。
+ *
+ * --width 同理：表情图（mface / marketface）的 max-width 是
+ * calc(var(--width) / 2 + 20px)，而 --width 以前要等解码后由 imageLoaded 写入，
+ * 在那之前它是无效值、max-width 退回 none，解码完再缩一次 —— 提前给出就省掉这一缩。
+ */
+function preSize(url: string) {
+    const info = getImageInfo(url)
+    if (!info) return undefined
+    const width = isLongImage(url) ? info.w : scaledImageWidth(info.w, info.h)
+    return {
+        width: info.w,
+        height: info.h,
+        style: { '--width': `${width}px` },
+    }
+}
+
 function imgClick(url: string) {
     if (viewerRef?.value && imageListHeader) {
         viewerRef.value.openBySrc(imageListHeader, url)
@@ -672,29 +737,33 @@ async function imageLoaded(event: Event) {
         return
     }
 
-    const vh = document.documentElement.clientHeight || document.body.clientHeight
+    // 把量到的信息记进共享缓存：这条消息下次再渲染（往回翻、切会话回来）时，模板里的
+    // preSize / preImgClass 就能在解码之前把框和 class 一次摆好。长图的 .long-img 也
+    // 从缓存出去 —— 这里不再手动 classList.add，免得模板下次重渲染时 Vue 用绑定值整个
+    // 覆盖 className 把它抹掉。赋值发生在 await 之前，重渲染赶在取色完成前就落地。
+    const imgUrl = img.dataset.imgUrl
+    if (imgUrl) rememberImageSize(imgUrl, img.naturalWidth, img.naturalHeight)
+
     const imgHeight = img.naturalHeight || img.height
     let imgWidth = img.naturalWidth || img.width
 
-    const aspectRatio = imgHeight / imgWidth
-
-    if (aspectRatio > 2.5) {
-        img.classList.add('long-img')
+    if (imgHeight / imgWidth > 2.5) {
         try {
             const picLight = ( await getForegroundToneGridFromImageUrl(backend.proxyUrl(img.src), 0.4))[1][1] === 'light'
-            if(picLight) {
-                img.classList.add('light')
-            }
+            if(picLight && imgUrl) rememberImageTone(imgUrl, true)
         } catch {
             // do nothing
         }
     } else {
-        if (imgHeight > vh * 0.35)
-            imgWidth = (imgWidth * (vh * 0.35)) / imgHeight
+        // 缩放算法在 scaledImageWidth 里，模板提前占位用的是同一份
+        imgWidth = scaledImageWidth(imgWidth, imgHeight)
     }
 
     img.style.setProperty('--width', `${imgWidth}px`)
-    emit('imageLoaded', img.offsetHeight)
+    // 除了撑开的高度，还要把顶边位置（视口坐标）一起给出去：父级得知道这张图是
+    // 长在聊天面板顶边以上、还是就长在可见区域里，才知道该不该补滚动。此处读
+    // 顶边是同步的，和父级接着读面板顶边之间不可能插进一次滚动。
+    emit('imageLoaded', img.offsetHeight, img.getBoundingClientRect().top)
 }
 
 function imgLoadFail(event: Event) {
@@ -851,16 +920,13 @@ function loadLinkPreview(domain: string, res: any) {
     }
 }
 
-function linkViewPicFin() {
-    const img = document.getElementById(
-        data.message_id + '-linkview-img',
-    ) as HTMLImageElement
-    if (img !== null) {
-        const w = img.naturalWidth
-        const h = img.naturalHeight
-        if (w > h) {
-            linkViewStyle.value = 'large'
-        }
+function linkViewPicFin(event: Event) {
+    // 直接用事件里的元素，不再拿 message_id 拼个 id 去 document 里找：同一个
+    // message_id 会被渲染两次（列表里一份、引用预览里一份），id 就重复了，
+    // getElementById 只会返回先出现的那份，很可能量到的是隐藏副本的尺寸。
+    const img = event.target as HTMLImageElement
+    if (img.naturalWidth > img.naturalHeight) {
+        linkViewStyle.value = 'large'
     }
 }
 function linkViewPicErr() {

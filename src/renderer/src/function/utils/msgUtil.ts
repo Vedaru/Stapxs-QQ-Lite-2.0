@@ -13,6 +13,7 @@ import {
     UserGroupElem,
 } from '../elements/information'
 import { sendStatEvent } from './appUtil'
+import { ref } from 'vue'
 import { backend } from '@renderer/runtime/backend'
 import { useContactStore } from '@renderer/state/contact'
 import { useUIStore } from '@renderer/state/ui'
@@ -814,6 +815,51 @@ export function qqLevelToEmoji(level) {
     const star = level;
 
     return '👑'.repeat(crown) + '☀️'.repeat(sun) + '🌙'.repeat(moon) + '⭐️'.repeat(star) + '（' + rawLevel + '）';
+}
+
+/**
+ * 已量到的图片信息，按 URL 索引：原始尺寸（w / h）和长图角标的深浅（light）。
+ *
+ * 为什么需要它：消息里的 <img> 身上没有任何尺寸信息 —— OneBot 的图片段只有
+ * file / url / file_size，没有宽高；本地图片缓存（src/tauri/src/commands/db.rs 的
+ * images 表）也只存字节。于是第一帧画出来的时候图片高度是 0，等解码完成才撑开，
+ * 消息列表的总高度在画完之后还在长 —— 这是上拉翻历史时抖动的来源之一。
+ *
+ * 这里把量到的原始宽高在下一次渲染之前交出去，让 <img> 用 width / height 属性先
+ * 把正确比例的框占住：浏览器按属性里的比例算尺寸，再套 max-width / max-height，
+ * 于是解码前后布局一致，不会再长高。同一个 URL 量一次就够。
+ *
+ * 必须同步可读、且跨组件实例共享 —— 同一条消息会在消息列表和引用预览里各渲染一份，
+ * 两份都得看到同一份数据。必须是响应式的，因为长图那对 class（.long-img / .light）
+ * 也挂在它上面：class 交给模板算，才不会在下次重渲染时被 Vue 的 class 补丁抹掉
+ * （以前是解码后 classList.add 上去的，模板一重渲染就没了）。
+ */
+const imageInfos = ref<Record<string, { w: number, h: number, light?: boolean }>>({})
+
+/** 取一张图片已量到的信息；还没量到就返回 undefined，由调用方决定要不要占位。 */
+export function getImageInfo(url: string) {
+    return imageInfos.value[url]
+}
+
+/**
+ * 记录一张图片的原始尺寸（自然宽高，不是渲染后的尺寸）。同一个 URL 只记第一次，
+ * 免得每次 load 都触发一轮重渲染。
+ */
+export function rememberImageSize(url: string, width: number, height: number) {
+    if (!url || !Number.isFinite(width) || !Number.isFinite(height)) return
+    if (width <= 0 || height <= 0) return
+    if (imageInfos.value[url]) return
+    imageInfos.value[url] = { w: width, h: height }
+}
+
+/**
+ * 记录长图角标的深浅（.long-img.light）。取色是异步的、必然晚于尺寸到，所以单独一个
+ * 入口。没有尺寸条目时（宽度为 0 的坏图）直接丢弃 —— 那张图本来也挂不上 .long-img。
+ */
+export function rememberImageTone(url: string, light: boolean) {
+    const info = imageInfos.value[url]
+    if (!info) return
+    info.light = light
 }
 
 /**
