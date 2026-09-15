@@ -949,7 +949,26 @@ function updateChatPadding() {
             Number.POSITIVE_INFINITY,
         ): morePan.getBoundingClientRect().top
     const chatBottom = chatPan.getBoundingClientRect().bottom
-    padding.style.height = Math.max(0, chatBottom - contentTop) + 'px'
+    const reserve = Math.max(0, chatBottom - contentTop)
+    const previous = padding.getBoundingClientRect().height
+    const gap = scrollGap(chatPan)
+
+    // 这块预留区是滚动内容里贴着原点的那一块（chat.css 的 column-reverse）：它的高度
+    // 一变，上面所有消息的「离底距离」就整体跟着变，用户不在底部时屏幕上那一屏会被
+    // 整块推着走。输入区一长高（换行、回复条、表情面板弹开）就是一次这种推 —— 这是
+    // 反转流向下除「新消息接在近端」「近端图片解码」之外，最后一个还会推视口的东西。
+    //
+    // 补不补只看一件事：预留区整体在视口之外吗（gap ≥ 新旧预留的较大者）。这块高度
+    // 只影响从面板底边往上 reserve 这一段屏幕，整段都在视口下方时，屏幕上没有任何一条
+    // 消息和它相邻，谁也谈不上被盖住，那就把高度差从 gap 里补掉 —— 和 updateList 里
+    // 「近端长高」用的是同一条规则。反过来（gap 比它小），用户正看着贴着输入区的那
+    // 几条，它们必须让位：贴底时最新一条要跟着输入区长高往上走，这正是预留区存在的
+    // 意义，这里就什么都不做。
+    padding.style.height = reserve + 'px'
+    const delta = reserve - previous
+    if (delta !== 0 && gap >= Math.max(previous, reserve)) {
+        setScrollGap(chatPan, gap + delta)
+    }
 }
 
 function scheduleChatPaddingUpdate(afterUpdate?: () => void) {
@@ -1241,13 +1260,17 @@ function scrollToMsgLocal(message_id: string) {
  * 衡量会系统性补少 —— imgBottom = panBottom + 50、height = 200 时只补 50、剩 150
  * 的跳；imgBottom == panBottom 时干脆补 0、整 200 全跳，而那正是翻历史时最常见的
  * 位置：旧消息的图片刚好从视口底边冒头。
+ *
+ * 这里原本还有一条「列表短于 20 条就直接回到底部」。去掉它是因为反转流向让它既没用
+ * 又有害：贴底时原点本来就钉住，图片只会从固定的底边往上长（实测最新一条图片撑开
+ * 120px 后，它的底边位置和离输入区的间距都一个像素没动），不需要任何动作；而没贴底
+ * 时那条分支就是把用户从历史里直接拽回底部 —— 列表越短越可能触发（20 条以内），
+ * 上拉翻历史时图一解码就跳一下，正是「偶发跳动」的手感来源。
  */
 function imgLoadedScroll(height: number, imgBottom?: number) {
     const pan = document.getElementById('msgPan')
     if(pan) {
-        if(list.length <= 20 && !tags.value.showBottomButton) {
-            scrollBottom()
-        } else if (imgBottom === undefined) {
+        if (imgBottom === undefined) {
             // 拿不到底边位置（老调用路径）就退回「跟着图片走」的行为
             setScrollGap(pan, scrollGap(pan) + height)
         } else if (imgBottom >= pan.getBoundingClientRect().bottom) {
