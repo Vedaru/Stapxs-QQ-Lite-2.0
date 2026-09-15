@@ -92,6 +92,7 @@ export const optDefault: { [key: string]: any } = {
     opt_fast_animation: false,
     chat_more_blur: false,
     glass_effect: false,
+    opt_win_blur_border: false,
     initial_scale: 0.85,
     fs_adaptation: 0,
     opt_always_top: false,
@@ -156,7 +157,8 @@ const configFunction: { [key: string]: (value: any) => void } = {
     session_display_mode: clearGroupAssist,
     use_favicon_notice: setFaviconNotice,
     custom_css: injectCustomCss,
-    opt_ind_message: updateChatPan
+    opt_ind_message: updateChatPan,
+    opt_win_blur_border: updateWinBlurBorder
 }
 
 // =============== 附加设置注册接口 ===============
@@ -260,6 +262,17 @@ function injectCustomCss(value: string) {
 
 function clearGroupAssist() {
     updateBaseOnMsgList()
+}
+
+/**
+ * 应用窗口模糊边框设置
+ * @description Linux 桌面端窗口默认填满整个区域；开启后恢复浮动卡片外观，
+ * 四周留出透明边距与圆角。那些像素不会被绘制，而是由系统合成器填充——
+ * 在启用了模糊的合成器（Hyprland decoration:blur、KWin 等）上会变成模糊的桌面背景。
+ */
+function updateWinBlurBorder(value: boolean) {
+    if (!backend.isDesktop() || backend.platform !== 'linux') return
+    document.documentElement.classList.toggle('win-blur-border', value === true)
 }
 
 function updateFarstAnimation(value: boolean) {

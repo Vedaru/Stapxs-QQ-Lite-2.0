@@ -1915,3 +1915,9 @@ msgstr ""
 
 msgid "将按顺序逐条转发 {count} 条消息，是否继续？"
 msgstr ""
+
+msgid "窗口模糊边框"
+msgstr ""
+
+msgid "在窗口四周留出透明边距与圆角，由系统合成器填充背景"
+msgstr ""

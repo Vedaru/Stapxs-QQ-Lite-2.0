@@ -167,6 +167,21 @@
                     </div>
                 </label>
             </div>
+            <div v-if="backend.isDesktop() && backend.platform === 'linux'" class="opt-item">
+                <div :class="checkDefault('opt_win_blur_border')" />
+                <font-awesome-icon :icon="['fas', 'border-top-left']" />
+                <div>
+                    <label for="opt-view-win-blur-border">{{ $t('窗口模糊边框') }}</label>
+                    <span>{{ $t('在窗口四周留出透明边距与圆角，由系统合成器填充背景') }}</span>
+                </div>
+                <label class="ss-switch">
+                    <input id="opt-view-win-blur-border" v-model="settingsStore.sysConfig.opt_win_blur_border"
+                        type="checkbox" name="opt_win_blur_border" @change="save">
+                    <div>
+                        <div />
+                    </div>
+                </label>
+            </div>
             <div class="opt-item">
                 <div :class="checkDefault('chat_background')" />
                 <font-awesome-icon :icon="['fas', 'image']" />

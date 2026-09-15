@@ -913,6 +913,7 @@ onMounted(() => {
         Option.run('opt_dark', Option.get('opt_dark'))
         Option.run('opt_auto_dark', Option.get('opt_auto_dark'))
         Option.run('theme_color', Option.get('theme_color'))
+        Option.run('opt_win_blur_border', Option.get('opt_win_blur_border'))
         // 流体玻璃样式附加设置
         if (Option.get('glass_effect')) {
             const app = document.getElementById('app')
