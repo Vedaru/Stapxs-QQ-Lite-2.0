@@ -242,6 +242,14 @@
     cursor: pointer;
     display: block;
     max-width: 100%;
+    /* 这条不是可有可无的：模板会给图片绑 width / height 属性，好让浏览器在解码
+     * 之前就按原始比例把框占住（见 MsgBody.vue 的 preSize）。而 width / height
+     * 属性属于表现性提示，会变成一条写死的 height: 200px —— 那样 max-width: 100%
+     * 只把宽度压小、高度不动，object-fit 又是默认的 fill，图就被纵向拉变形了。
+     * 显式写 height: auto 盖掉那条提示，高度改回由属性推导出的比例算，max-width
+     * 与 max-height 才是真正在「等比缩放到框内」。没有绑属性的图本来就是 auto，
+     * 这一行对它们没有影响。 */
+    height: auto;
 }
 .msg-img.top {
     margin: 0 0 5px 0;
