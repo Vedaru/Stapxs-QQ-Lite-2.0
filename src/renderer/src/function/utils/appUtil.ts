@@ -59,10 +59,26 @@ export function scrollToMsg(seqName: string, showAnimation: boolean, showHighlig
     if (msg) {
         const pan = document.getElementById('msgPan')
         if (pan !== null) {
-            // 同 Chat.vue 的 scrollTo：逐次指定 behavior，不要改容器的
+            // #msgPan 是反转流向（column-reverse）：scrollTop 0 在底部、往上为负，
+            // 所以不能再拿「元素 offsetTop」这种从顶部算起的坐标去赋值，只能改用
+            // 视口坐标现算。目标：让消息顶边落在面板顶边下方 10px 处。
+            //
+            // 内容在屏幕上的位置由 gap（离底多远）决定：gap 增大 → 视口朝远端移 →
+            // 内容整体下移；减小则上移。所以「当前 gap + 要挪的距离」就是目标 gap。
+            // panRect.bottom - msgRect.top 是消息顶边离面板底边多远；减掉一个
+            // clientHeight 就换算成「从面板顶边起算」，再加那 10px 边距。
+            const panRect = pan.getBoundingClientRect()
+            const msgRect = msg.getBoundingClientRect()
+            const maxGap = Math.max(0, pan.scrollHeight - pan.clientHeight)
+            const gap = Math.max(0, -pan.scrollTop)
+            const target = Math.min(
+                Math.max(gap + (panRect.bottom - msgRect.top) - pan.clientHeight + 10, 0),
+                maxGap,
+            )
+            // 同 Chat.vue 的 setScrollGap：逐次指定 behavior，不要改容器的
             // scroll-behavior —— 那会留下全局 smooth，把别人的补偿滚动也变成动画。
             pan.scrollTo({
-                top: msg.offsetTop - msg.offsetHeight + 10,
+                top: -target,
                 behavior: showAnimation ? 'smooth' : 'instant',
             })
             if (showHighlight) {

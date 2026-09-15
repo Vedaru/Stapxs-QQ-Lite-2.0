@@ -122,18 +122,31 @@ input {
     padding-top: 90px;
     z-index: 1;
     flex: 1;
-    /* 关掉浏览器自带的滚动锚定。WebKit 压根没实现这个特性，所以这个项目一直
-     * 靠 JS 手动补偿（updateList 里按新增高度改 scrollTop、imgLoadedScroll 在
-     * 图片撑开时补高度）。而 Chromium 会在布局时自己再补一次 —— 同一张图片的
-     * 高度被算了两次，上拉加载历史时列表就会跳。关掉它，手动补偿成为唯一来源，
-     * 各个内核行为也一致。 */
+    /* 反转流向（gifted-chat 的 inverted 列表模型）：滚动主轴从「最新一条」出发，
+     * 占位（.chat-padding）、消息列表、历史状态区三个孩子在 DOM 里就按「离原点
+     * 从近到远」排 —— 占位在最下、状态区在最上。
+     *
+     * 这样一来，往列表头部插历史（上拉加载）时，插入点位于整个滚动轴的最远端，
+     * 原点附近的内容一个像素都不动，天然不需要任何 scrollTop 补偿。以前每插一批
+     * 都要算一次「新增高度」再改写 scrollTop，那个补偿只要和真实布局差一点（图片
+     * 迟到、状态区高度变化、旗子被提前落下）就会跳，这就是抖动的根。
+     *
+     * 代价：滚动坐标反过来了。scrollTop 为 0 表示「在底部」，往上滚是负值
+     * （WebKit/Chromium 都是 [-max, 0]）。下方 scrollGap / setScrollGap 两个工具
+     * 函数把符号差异吃掉，其余代码只跟「离底部多远」打交道。 */
+    display: flex;
+    flex-direction: column-reverse;
+    /* 关掉浏览器自带的滚动锚定。Chromium 会在插历史时自行挑一个中间节点来维持
+     * 位置，而反转流向下原点已经固定在底部、本就不该动 —— 两者叠加就是重复补偿，
+     * 上拉加载时反而跳。关掉它，原点不动成为唯一来源，各内核行为一致。 */
     overflow-anchor: none;
+}
+/* 主轴 children 一律不收缩：列表远高于容器，若允许收缩会被压扁而不是产生滚动。 */
+.chat-pan > div.chat > * {
+    flex-shrink: 0;
 }
 .chat-padding {
     display: block;
-}
-.chat-pan > div.chat > div:last-child {
-    height: calc(100% - var(--safe-area-bottom));
 }
 .chat-pan > div.chat::-webkit-scrollbar {
     background: transparent;

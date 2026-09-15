@@ -772,11 +772,12 @@ async function imageLoaded(event: Event) {
     // 渲染，而渲染时 preSize 已经在按缓存绑属性了），同样不该补。
     const reservedBox =
         img.hasAttribute('width') && img.hasAttribute('height')
-    // 除了撑开的高度，还要把顶边位置（视口坐标）一起给出去：父级得知道这张图是
-    // 长在聊天面板顶边以上、还是就长在可见区域里，才知道该不该补滚动。此处读
-    // 顶边是同步的，和父级接着读面板顶边之间不可能插进一次滚动。
+    // 除了撑开的高度，还要把底边位置（视口坐标）一起给出去：聊天面板是反转流向
+    // （column-reverse），视口钉在离底部 gap 上，所以父级评判的锚点是面板底边 ——
+    // 得知道这张图的底边有没有落到面板底边之下，才知道该不该补滚动。此处读底边
+    // 是同步的，和父级接着读面板底边之间不可能插进一次滚动。
     if (!reservedBox) {
-        emit('imageLoaded', img.offsetHeight, img.getBoundingClientRect().top)
+        emit('imageLoaded', img.offsetHeight, img.getBoundingClientRect().bottom)
     }
 }
 

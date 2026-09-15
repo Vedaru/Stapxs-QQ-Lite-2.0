@@ -907,11 +907,12 @@ const msgFunctions = {
             uiStore.nowGetHistory = false
             return
         }
-        // 滚动位置的修正由 Chat.vue 的 updateList 负责：它按列表头有没有换人判断
-        // 这次变更是不是「往上插了历史」，并在同一个 tick 内按新增高度补偿 scrollTop。
-        // 这里原本还有一份 setTimeout(200) 的补偿 —— 200ms 后再写一次 scrollTop，那时
-        // 「加载中」时间戳已经移除、内容高度已经缩回，算出来的值和第一次不一样，等于
-        // 抖动之后再补跳一下；而且它写的是「新高度 − 旧高度」，等于假设用户还停在顶部。
+        // 这里不用管滚动位置：聊天面板是反转流向（chat.css 的 column-reverse），
+        // 滚动原点固定在底部，往列表头插历史插在离原点最远的一端，屏幕上那一屏本来
+        // 就不动 —— 见 Chat.vue 的 updateList。这里原本还有一份 setTimeout(200) 的
+        // 补偿：200ms 后再写一次 scrollTop，那时「加载中」时间戳已经移除、内容高度
+        // 已经缩回，算出来的值和第一次不一样，等于抖动之后再补跳一下；而且它写的是
+        // 「新高度 − 旧高度」，等于假设用户还停在顶部。反转流向下这些补偿全都不需要了。
         settleHistoryRequest(saveMsg(msg, 'top'))
     },
 
