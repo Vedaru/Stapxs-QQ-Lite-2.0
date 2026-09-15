@@ -315,10 +315,17 @@ input {
     right: 0;
     left: 0;
     top: 0;
+    /* 隐藏时还要挡掉指针事件：它是绝对定位的，不受外层 height: 0 限制，收起时是
+     * 一整条压在消息列表顶端的透明矩形。opacity: 0 的元素照样参与命中测试，不加
+     * 这一行，列表最上面那一条的点击、选词都会被这条看不见的胶囊吃掉。（以前
+     * 外层是 height: 0 + overflow: hidden，把它裁没了，现在裁不了也不能裁 ——
+     * 展开时它本来就要浮到外层之上。） */
+    pointer-events: none;
 }
 
 .chat-pan > div.loading.show > div.loading-pill {
     transform: translateY(0);
+    pointer-events: auto;
     opacity: 1;
 }
 @-webkit-keyframes rotate {
