@@ -1,0 +1,80 @@
+/*
+ * 动效令牌 —— Material Design 3 motion
+ *
+ * 全应用的时长与缓动只从这里取值。以前每条规则各自写 `0.3s`、`all 0.2s ease`
+ * 之类的字面量，结果同一个动作在不同面板里速度、手感都不一样；改这里一处，全
+ * 应用的节奏就统一了。
+ *
+ * 三条约束（来自 M3 的 motion 规范）：
+ *
+ * 1. 只动 transform 和 opacity。这两个属性由合成器处理，不触发布局与重绘。
+ *    动 width/height/margin/top 会让浏览器每一帧重新排版整棵子树，在 240Hz
+ *    的屏幕上尤其明显。颜色类属性（background-color、color、border-color）可
+ *    以动，但仅限状态反馈。
+ *
+ * 2. 进入慢、离开快。进入用 decelerate（慢起步快的减速曲线，长的 medium2），
+ *    离开用 accelerate（短的 short4）。这个不对称是动效「看起来是设计过的」
+ *    而不是「卡了一下」的关键。
+ *
+ * 3. 减少动态效果。`prefers-reduced-motion` 下把基础时长压到 1ms，所有派生
+ *    令牌会跟着塌缩（派生值是 var() 引用，不是字面量拷贝），动画变成瞬时切换。
+ *
+ * 取值来源：Material Design 3 的 --md-sys-motion-*，这里去掉了用不到的
+ * long3 以上的档位。
+ */
+:root {
+    /* 时长 */
+    --md-motion-duration-short1: 50ms;
+    --md-motion-duration-short2: 100ms;
+    --md-motion-duration-short3: 150ms;
+    --md-motion-duration-short4: 200ms;
+    --md-motion-duration-medium1: 250ms;
+    --md-motion-duration-medium2: 300ms;
+    --md-motion-duration-medium3: 350ms;
+    --md-motion-duration-medium4: 400ms;
+    --md-motion-duration-long1: 450ms;
+    --md-motion-duration-long2: 500ms;
+
+    /* 缓动 */
+    --md-motion-easing-linear: cubic-bezier(0, 0, 1, 1);
+    --md-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+    --md-motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);
+    --md-motion-easing-standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
+    --md-motion-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+    --md-motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+    --md-motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+
+    /* 语义组合：直接塞进 transition / animation 简写里用 */
+    /* 进入：面板、弹窗、列表项出现 */
+    --md-motion-enter: var(--md-motion-duration-medium2) var(--md-motion-easing-emphasized-decelerate);
+    /* 离开：一律比进入快，且加速离场 */
+    --md-motion-exit: var(--md-motion-duration-short4) var(--md-motion-easing-emphasized-accelerate);
+    /* 变化：尺寸、位置一类的中性切换（无方向语义） */
+    --md-motion-change: var(--md-motion-duration-short4) var(--md-motion-easing-standard);
+    /* 状态：hover / focus / 选中这类反馈，要立刻响应 */
+    --md-motion-state: var(--md-motion-duration-short3) var(--md-motion-easing-standard);
+    /* 循环：加载指示器，匀速、无缓动。
+     * 不用 long2（500ms）—— 那大约是 2 圈/秒，转起来晃眼；M3 的进度环
+     * 一圈约 1.4s，这里取同一个节奏。 */
+    --md-motion-loop: 1400ms var(--md-motion-easing-linear);
+
+    /* 位移距离：面板滑入、列表项浮入 */
+    --md-motion-distance-short: 8px;
+    --md-motion-distance-medium: 16px;
+    --md-motion-distance-long: 24px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --md-motion-duration-short1: 1ms;
+        --md-motion-duration-short2: 1ms;
+        --md-motion-duration-short3: 1ms;
+        --md-motion-duration-short4: 1ms;
+        --md-motion-duration-medium1: 1ms;
+        --md-motion-duration-medium2: 1ms;
+        --md-motion-duration-medium3: 1ms;
+        --md-motion-duration-medium4: 1ms;
+        --md-motion-duration-long1: 1ms;
+        --md-motion-duration-long2: 1ms;
+    }
+}

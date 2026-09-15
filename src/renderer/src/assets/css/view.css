@@ -24,17 +24,10 @@ textarea:focus {
 .custom-focus {
     outline: none;
 }
+/* 焦点环不做动画：outline 属于绘制阶段，动它等于每帧重画一遍；焦点反馈本来
+ * 也该立刻出现。直接给终态，去掉 @keyframes 和那 100ms 的重绘。 */
 .custom-focus:focus-visible {
-    animation: custom-focus .1s ease-out forwards;
-}
-
-@keyframes custom-focus {
-  0% {
-    outline: 15px solid rgba(127, 145, 222, 0);
-  }
-  100% {
     outline: 3px solid rgba(127, 145, 222, 1);
-  }
 }
 
 .vc-switch {
@@ -51,7 +44,7 @@ textarea:focus {
 }
 
 .dev-bar {
-    transition: opacity 0.3s, transform 0.4s;
+    transition: opacity var(--md-motion-enter), transform var(--md-motion-enter);
     background: var(--color-bg-yellow);
     display: flex;
     align-items: end;
@@ -75,7 +68,7 @@ textarea:focus {
     left: 90px;
 }
 .lyric-bar {
-    transition: opacity 0.3s;
+    transition: opacity var(--md-motion-enter);
     background: var(--color-card-2);
     display: flex;
     align-items: end;
@@ -120,7 +113,7 @@ textarea:focus {
 }
 .top-bar > div.controller > div {
     cursor: pointer;
-    transition: background 0.2s;
+    transition: background var(--md-motion-state);
     justify-content: center;
     border-radius: 7px;
     display: flex;
@@ -164,7 +157,7 @@ textarea:focus {
     top: 0;
 }
 .load-view svg {
-    animation: rotate 1.5s linear infinite;
+    animation: rotate var(--md-motion-loop) infinite;
     color: var(--color-font-r);
     opacity: 0.5;
     width: 5vw;
@@ -176,7 +169,7 @@ textarea:focus {
     height: 100%;
 }
 #base-app {
-    transition: transform 0.2s;
+    transition: transform var(--md-motion-change);
 }
 #base-app.no-touch {
     transform: rotate(180deg);
@@ -188,7 +181,7 @@ textarea:focus {
 }
 
 .main-bg {
-    transition: transform 0.4s, opacity 0.8s;
+    transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
     opacity: 1;
     position: absolute;
     width: 100%;
@@ -203,7 +196,7 @@ textarea:focus {
 }
 
 .main-body {
-    transition: transform 0.4s, opacity 0.5s;
+    transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
     flex-direction: row;
     margin-top: 0;
     display: flex;
@@ -215,7 +208,7 @@ textarea:focus {
     opacity: 0;
 }
 .main-body > ul {
-    transition: transform 0.4s;
+    transition: transform var(--md-motion-enter);
     cursor: pointer;
     list-style-type: none;
     background: var(--color-card-2);
@@ -264,9 +257,7 @@ textarea:focus {
     color: var(--color-font-r);
 }
 .main-body > ul > li > svg {
-    transition:
-        background 0.3s,
-        fill 0.3s;
+    transition: background var(--md-motion-state), fill var(--md-motion-state);
     color: var(--color-font-1);
     border-radius: 7px;
     padding: 15px;
@@ -375,7 +366,7 @@ textarea:focus {
     background: var(--color-card-1);
     width: calc(100% - 42px);
     align-items: center;
-    transition: all 0.3s;
+    transition: background var(--md-motion-state), border-color var(--md-motion-state);
     border-radius: 50px;
     margin-top: 10px;
     padding: 0 20px;
@@ -398,7 +389,7 @@ textarea:focus {
 }
 .login-pan-card label > svg {
     color: var(--color-font);
-    transition: fill 0.3s;
+    transition: fill var(--md-motion-state);
     height: 15px;
     width: 15px;
 }
@@ -458,7 +449,7 @@ textarea:focus {
     justify-content: center;
     cursor: pointer;
     border-radius: 8px;
-    transition: all 0.2s;
+    transition: color var(--md-motion-state);
     color: var(--color-font-2);
     z-index: 2;
 }
@@ -468,7 +459,7 @@ textarea:focus {
 .history-dropdown-trigger > svg {
     width: 14px;
     height: 14px;
-    transition: transform 0.2s;
+    transition: transform var(--md-motion-state);
 }
 .history-dropdown-trigger:hover > svg {
     transform: translateY(2px);
@@ -487,14 +478,19 @@ textarea:focus {
     padding: 6px !important;
     z-index: 1000;
     box-shadow: 0 0 5px var(--color-shader);
-    animation: dropdown-appear 0.2s ease;
+    /* 菜单类进入：M3 的菜单比面板快一档，用 200ms 而不是 --md-motion-enter 的
+     * 300ms —— 一个下拉菜单让人等 300ms 才落位会显得钝。曲线仍是进入用的
+     * 强调减速。 */
+    animation: dropdown-appear
+        var(--md-motion-duration-short4) var(--md-motion-easing-emphasized-decelerate);
     border-radius: 15px;
 }
 
+/* 只动 opacity / transform，两者都在合成器上。 */
 @keyframes dropdown-appear {
     from {
         opacity: 0;
-        transform: translateY(-8px);
+        transform: translateY(calc(-1 * var(--md-motion-distance-short)));
     }
     to {
         opacity: 1;
@@ -509,7 +505,7 @@ textarea:focus {
     padding: 7px 9px;
     border-radius: 10px;
     cursor: pointer;
-    transition: background 0.2s;
+    transition: background var(--md-motion-state);
     margin-bottom: 4px;
 }
 .history-dropdown-item:last-child {
@@ -565,7 +561,10 @@ textarea:focus {
     padding: 6px;
     border-radius: 6px;
     color: var(--color-font-2);
-    transition: all 0.2s;
+    /* hover 改的是 background / color / opacity 三个，就只动这三个。 */
+    transition: background var(--md-motion-state),
+        color var(--md-motion-state),
+        opacity var(--md-motion-state);
     flex-shrink: 0;
     opacity: 0.6;
 }
@@ -629,14 +628,14 @@ textarea:focus {
 
 .friend-list {
     background: var(--color-card-1);
-    transition: transform 0.3s;
+    transition: transform var(--md-motion-change);
     flex-direction: column;
     overflow: hidden;
     display: flex;
     width: 300px;
 }
 .friend-list > div {
-    transition: opacity 0.3s;
+    transition: opacity var(--md-motion-enter);
 }
 .friend-list .small {
     display: none;
@@ -747,7 +746,9 @@ textarea:focus {
     opacity: 0;
 }
 .group-assist-message-list {
-    transition: margin 0.3s, opacity 0.4s;
+    /* margin 是布局属性，动它每帧都要重排。这里暂时留着，是因为面板的宽度参与
+     * 了兄弟元素的排布，换成 transform 会把兄弟一起挪走。 */
+    transition: margin var(--md-motion-enter), opacity var(--md-motion-enter);
     margin-right: -300px;
     opacity: 0;
     z-index: 1;
@@ -771,11 +772,11 @@ textarea:focus {
     padding: 10px;
     border-radius: 7px;
     transform: translate(0, 0);
-    transition:
-        background 0.2s,
-        color 0.2s,
-        backdrop-filter 0.2s,
-        transform 0.2s;
+    /* 原列表里还有 backdrop-filter，但没有任何状态去改它，等于白白让浏览器为
+     * 它准备一层合成；去掉。 */
+    transition: background var(--md-motion-state),
+        color var(--md-motion-state),
+        transform var(--md-motion-state);
 }
 .friend-body.active {
     background: var(--color-main);
@@ -801,9 +802,7 @@ textarea:focus {
     object-fit: cover;
 }
 .friend-body > svg {
-    transition:
-        background 0.3s,
-        color 0.3s;
+    transition: background var(--md-motion-state), color var(--md-motion-state);
     background: var(--color-card-2);
     color: var(--color-font);
     pointer-events: none;
@@ -825,9 +824,9 @@ textarea:focus {
     margin-right: 10px;
     transform: scaleY(0);
     display: unset !important;
-    transition:
-        transform 0.3s,
-        margin 0.3s;
+    /* transform 是选中条展开（scaleY），margin 是它横向让位。margin 属于布局
+     * 属性，理由同 .group-assist-message-list。 */
+    transition: transform var(--md-motion-change), margin var(--md-motion-change);
     margin-left: -13px;
 }
 .friend-body.active > div:nth-child(1) {
@@ -895,7 +894,9 @@ textarea:focus {
     background: rgba(var(--color-bg-rgb), 0.7);
     box-shadow: 0 0 5px var(--color-shader);
     backdrop-filter: blur(50px);
-    transition: transform 0.1s;
+    /* 菜单从 scaleY(0) 展开到 scaleY(1)，只动 transform。原来 0.1s 太快，
+     * 看起来像闪了一下；中性变化用 --md-motion-change。 */
+    transition: transform var(--md-motion-change);
     transform-origin: top;
     transform: scaleY(0);
     pointer-events: all;
@@ -905,16 +906,15 @@ textarea:focus {
     padding: 10px;
 }
 .msg-menu-body.topOut {
-    transition:
-        transform 0.1s,
-        margin-top 0.2s;
+    /* margin-top 由脚本在贴近屏幕边缘时改写，所以它要单独列进过渡里。 */
+    transition: transform var(--md-motion-change), margin-top var(--md-motion-change);
 }
 .msg-menu-body.show {
     transform: scaleY(1);
 }
 .menu div.item,
 .msg-menu-body > div {
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     background: transparent;
     align-items: center;
     border-radius: 7px;
@@ -933,9 +933,7 @@ textarea:focus {
     width: 1rem !important;
 }
 .msg-menu-body > div > div > svg {
-    transition:
-        color 0.3s,
-        opacity 0.3s;
+    transition: color var(--md-motion-state), opacity var(--md-motion-state);
     color: var(--color-font-1);
     margin-top: 7px;
     height: 1rem;
@@ -948,7 +946,7 @@ textarea:focus {
 .msg-menu-body > div > a {
     color: var(--color-font);
     text-overflow: ellipsis;
-    transition: color 0.3s;
+    transition: color var(--md-motion-state);
     white-space: nowrap;
     overflow: hidden;
     margin-right: 10px;
@@ -1087,7 +1085,9 @@ textarea:focus {
 .pop-box-body {
     transform: translate(-50%, -50%);
     flex-direction: column;
-    transition: all 0.3s;
+    transition: transform var(--md-motion-enter),
+        margin-top var(--md-motion-enter),
+        opacity var(--md-motion-enter);
     margin-top: 50vh;
     position: absolute;
     width: fit-content;
@@ -1357,7 +1357,9 @@ textarea:focus {
 
 .mask-background {
     background-color: rgba(var(--color-card-2-rgb), 0.7);
-    transition: background 0.3s;
+    /* 这里没有状态选择器去改底色，但 --color-card-2-rgb 会在切换主题时由
+     * JS 改写，跟着其他主题面一起渐变，所以这条过渡是有用的，不能删。 */
+    transition: background-color var(--md-motion-state);
     position: absolute;
     height: 100%;
     width: 100%;
@@ -1375,7 +1377,8 @@ textarea:focus {
     left: 50%;
     transform: translateX(-50%);
     max-height: 50vh;
-    transition: height 0.2s;
+    /* 高度由内容撑出来（这里只有 max-height 兜底），全项目没有规则去改它的
+     * height，所以不声明过渡 —— 原来那条 `transition: height` 同样是空转。 */
     z-index: 20;
     box-shadow: 0 0 5px var(--color-shader);
 }
@@ -1432,7 +1435,14 @@ textarea:focus {
 .global-session-search-bar-enter-active,
 .global-session-search-bar-leave-active {
     z-index: 20;
-    transition: opacity 0.2s;
+}
+/* 进入慢、离开快。这个不对称是动效看起来“设计过”而不是“卡了一下”的关键，
+ * 所以 enter / leave 分开写，不能合用一条 transition。 */
+.global-session-search-bar-enter-active {
+    transition: opacity var(--md-motion-enter);
+}
+.global-session-search-bar-leave-active {
+    transition: opacity var(--md-motion-exit);
 }
 
 .global-session-search-bar-enter-from,
@@ -1447,7 +1457,7 @@ textarea:focus {
     margin-left: 10%;
     margin-right: 10%;
     display: flex;
-    transition: opacity 0.2s;
+    transition: opacity var(--md-motion-enter);
 }
 
 .viewer-bar::before,
@@ -1467,7 +1477,7 @@ textarea:focus {
     background-color: var(--color);
     margin: 5px;
     border-radius: 7px;
-    transition: 0.2s;
+    transition: transform var(--md-motion-state);
 }
 
 .viewer-tool-config-bar > div.line-width {
@@ -1477,7 +1487,7 @@ textarea:focus {
     margin: 5px;
     background-color: var(--color-main);
     border-radius: 7px;
-    transition: 0.2s;
+    transition: transform var(--md-motion-state);
     display: flex;
 }
 
@@ -1502,7 +1512,7 @@ textarea:focus {
     color: var(--color-card);
     background-color: var(--color-main);
     border-radius: 7px;
-    transition: 0.2s;
+    transition: transform var(--md-motion-state);
 }
 
 .viewer-tool-config-bar > hr {
@@ -1539,7 +1549,7 @@ textarea:focus {
     background-color: var(--color-main);
     color: var(--color-card);
     border-radius: 10px;
-    transition: background 0.2s;
+    transition: background var(--md-motion-state);
     flex-shrink: 1;
 }
 
@@ -1562,9 +1572,12 @@ textarea:focus {
     flex-shrink: 1;
 }
 
-.viewer-button-enter-active,
+.viewer-button-enter-active {
+    transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
+}
+
 .viewer-button-leave-active {
-    transition: all 0.2s;
+    transition: transform var(--md-motion-exit), opacity var(--md-motion-exit);
 }
 
 .viewer-button-enter-from,
@@ -1606,7 +1619,12 @@ textarea:focus {
 .viewer-img > canvas {
     margin-top: calc(50vh - var(--height) * var(--scale) / 2 + var(--y));
     margin-left: calc(50vw - var(--width) * var(--scale) / 2 + var(--x));
-    transition: all 0.2s;
+    /* 缩放/拖拽视图：width/height/margin 是布局属性，动它们每帧要重新排版，
+     * 但图片查看器的几何本来就是「元素自身尺寸」而不是别的属性可以表达的位移，
+     * 改成 transform: scale() 会把光标命中和边框一起缩放。这里保留布局动画，
+     * 只把时长与缓动收进令牌，别处统一。 */
+    transition: width var(--md-motion-change), height var(--md-motion-change),
+        margin var(--md-motion-change);
     width: calc(var(--width) * var(--scale));
     height: calc(var(--height) * var(--scale));
     transform-origin: center;
@@ -1644,7 +1662,7 @@ textarea:focus {
     background: rgba(var(--color-bg-rgb), 0.7);
     z-index: 10;
     opacity: 0;
-    transition: opacity 0.3s;
+    transition: opacity var(--md-motion-enter);
 }
 
 .viewer-img > div.x {
@@ -1689,11 +1707,12 @@ textarea:focus {
     width: 8px;
 }
 
+/* 图片左右翻页：只有 transform 在动（±100%），进出对称即可，属于「变化」语义 */
 .viewer-change-img-next-leave-active,
 .viewer-change-img-next-enter-active,
 .viewer-change-img-prev-leave-active,
 .viewer-change-img-prev-enter-active {
-    transition: all 0.15s ease-in-out;
+    transition: transform var(--md-motion-change);
 }
 
 .viewer-change-img-prev-enter-from,
@@ -1759,8 +1778,10 @@ textarea:focus {
         display: none;
     }
     /* 二级侧栏 */
+    /* 抽屉展开收的是宽度，动的是布局属性；这里不改成 transform 是因为栏内的
+     * 文本需要跟着重新折行。时长收进令牌，跟全应用一致。 */
     .friend-list {
-        transition: width 0.3s;
+        transition: width var(--md-motion-enter);
         width: 80px;
     }
     .friend-list.open {
@@ -2012,13 +2033,19 @@ textarea:focus {
 }
 
 /* 全局淡入淡出动画 */
-.v-enter-active,
-.v-leave-active {
-    transition: all 0.4s ease;
+/* 进入慢、离开快：以前两边都是 all 0.4s，遮罩和卡片用同一个时长，
+ * 结果关闭一个面板时遮罩要等 0.4s 才消失。现在离场走 exit 令牌（200ms）。 */
+.v-enter-active {
+    transition: opacity var(--md-motion-enter);
 }
-.v-enter-active > div.ss-card,
+.v-leave-active {
+    transition: opacity var(--md-motion-exit);
+}
+.v-enter-active > div.ss-card {
+    transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
+}
 .v-leave-active > div.ss-card {
-    transition: all 0.2s ease;
+    transition: transform var(--md-motion-exit), opacity var(--md-motion-exit);
 }
 
 .v-enter-from,
@@ -2028,10 +2055,10 @@ textarea:focus {
 /* 如果里面有卡片，触发卡片浮入浮出动画 */
 /* TODO: 对于本来就使用 translate 定位的卡片会失效（或者出问题） */
 .v-enter-from > div.ss-card {
-    transform: translateY(-20px);
+    transform: translateY(calc(-1 * var(--md-motion-distance-medium)));
 }
 .v-leave-to > div.ss-card {
-    transform: translateY(20px);
+    transform: translateY(var(--md-motion-distance-medium));
 }
 
 .history-box > .space {
@@ -2071,19 +2098,4 @@ textarea:focus {
     border-radius: 7px;
     border: 2px solid var(--color-main);
     margin-right: 5px;
-}
-
-@keyframes wordsLoop {
-    0% {
-        transform: translateX(0px);
-    }
-    25% {
-        transform: translateX(0px);
-    }
-    75% {
-        transform: translateX(calc(-100% + 2.35rem));
-    }
-    100% {
-        transform: translateX(calc(-100% + 2.35rem));
-    }
 }

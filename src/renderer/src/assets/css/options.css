@@ -36,7 +36,11 @@
 }
 
 .opt-main > div:first-child {
-    transition: all 0.3s;
+    /* 这里唯一会变的是启用透明 UI 时 append_vibrancy.css 被动态载入、把这栏
+     * 从 350px 收成 285px 并加 margin-left（见 append/append_vibrancy.css）。
+     * 原来是 `all`，等于让整栏任何属性变化都走动画 —— 包括布局属性。收起
+     * 宽度本身就属于「尺寸切换」，用 change 档（无方向语义）。 */
+    transition: width var(--md-motion-change), margin-left var(--md-motion-change);
     overflow-y: scroll;
     padding: 10px;
     width: 350px;
@@ -334,24 +338,28 @@
 }
 
 .opt-item {
-    transition: background 0.3s;
+    /* hover 反馈 */
+    transition: background var(--md-motion-state);
     padding: 10px 15px 10px 20px;
     align-items: center;
     border-radius: 7px;
     display: flex;
 }
 
+/* 设置项的入场：一组卡片依次浮入。延迟不是随手写的几个数，正好落在 M3 的
+ * 时长刻度上（100/150/200/250/300ms），所以直接引用令牌 —— 这样打开「减少
+ * 动态效果」时延迟也会一起塌缩到 1ms，而不用另一条规则去清。 */
 .opt-main:not(.opt-fast-animation) .opt-page > .ss-card {
     opacity: 0;
-    transform: translateY(-15px);
-    animation: opt-item-enter 0.2s ease-out forwards;
+    transform: translateY(calc(-1 * var(--md-motion-distance-medium)));
+    animation: opt-item-enter var(--md-motion-enter) forwards;
 }
 
-.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 2) { animation-delay: 0.1s; }
-.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 3) { animation-delay: 0.15s; }
-.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 4) { animation-delay: 0.2s; }
-.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 5) { animation-delay: 0.25s; }
-.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n) { animation-delay: 0.3s; }
+.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 2) { animation-delay: var(--md-motion-duration-short2); }
+.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 3) { animation-delay: var(--md-motion-duration-short3); }
+.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 4) { animation-delay: var(--md-motion-duration-short4); }
+.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n + 5) { animation-delay: var(--md-motion-duration-medium1); }
+.opt-main:not(.opt-fast-animation) .opt-page > .ss-card:nth-child(6n) { animation-delay: var(--md-motion-duration-medium2); }
 
 .opt-item:hover {
     background: var(--color-card-2);
@@ -372,7 +380,8 @@
     font-size: 0.85rem;
 }
 .opt-item > div:first-child {
-    transition: all 0.3s;
+    /* 这栏（max-width: 5px 的色条）只会被 :hover > .changed 改 background。 */
+    transition: background var(--md-motion-state);
     border-radius: 5px;
     margin-right: 16px;
     margin-left: -20px;
@@ -439,6 +448,9 @@
 .opt-item input[type='text'] {
     line-height: 35px;
     font-size: 0.8rem;
+    /* 过渡必须写在基类上，不能写在 OptInfo.vue 的 :hover 规则里 —— 写在 hover
+     * 上的话鼠标移出时规则立即失效，背景会瞬间跳回去，只有移入是渐变的。 */
+    transition: background var(--md-motion-state);
 }
 .opt-item div.ss-range {
     --range-height: 30px !important;
@@ -532,7 +544,8 @@
 
 .bot-status {
     background: var(--color-card-1);
-    transition: background 0.3s;
+    /* normal / slow 状态色切换 */
+    transition: background var(--md-motion-state);
     padding: 10px;
     margin-top: -10px;
     margin-bottom: 10px;
@@ -548,7 +561,7 @@
     background: var(--color-bg-yellow);
 }
 .bot-status > div {
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     background: var(--color-main);
     width: 0.5rem;
     height: 0.5rem;
@@ -627,7 +640,7 @@
 @keyframes opt-item-enter {
     from {
         opacity: 0;
-        transform: translateY(-10px);
+        transform: translateY(calc(-1 * var(--md-motion-distance-short)));
     }
     to {
         opacity: 1;

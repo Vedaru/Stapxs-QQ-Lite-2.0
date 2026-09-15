@@ -2766,21 +2766,23 @@ function exitWin() {
 </script>
 
 <style scoped>
-    /* 消息动画 */
+    /* 消息动画。enter 是「从左 16px 浮入 + 淡入」，move 是列表重排时的 FLIP
+     * 位移 —— 两种语义，各写各的清单。 */
     .msglist-move {
-        transition: all 0.3s;
+        transition: transform var(--md-motion-change);
     }
 
     .msglist-enter-active {
-        transition: all 0.4s;
+        transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
     }
 
+    /* leave-to 只改 opacity，所以这里不需要 transform */
     .msglist-leave-active {
-        transition: all 0.2s;
+        transition: opacity var(--md-motion-exit);
     }
 
     .msglist-enter-from {
-        transform: translateX(-20px);
+        transform: translateX(calc(-1 * var(--md-motion-distance-medium)));
         opacity: 0;
     }
 
@@ -2788,14 +2790,20 @@ function exitWin() {
         opacity: 0;
     }
 
-    /* 更多功能面板动画 */
-    .pan-enter-active,
+    /* 更多功能面板动画。这里原本是 `transition: opacity 0.3s`，但 .pan-enter-from
+     * 同时把 transform 设成了 translateX(20px) —— transform 不在过渡清单里，于是
+     * 面板会先瞬移 20px 再淡入。补上 transform 才是真的滑进来。 */
+    .pan-enter-active {
+        transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
+    }
+
+    /* pan-leave-to 只改 opacity，和上面 msglist 同理 */
     .pan-leave-active {
-        transition: opacity 0.3s;
+        transition: opacity var(--md-motion-exit);
     }
 
     .pan-enter-from {
-        transform: translateX(20px);
+        transform: translateX(var(--md-motion-distance-medium));
         opacity: 0;
     }
 

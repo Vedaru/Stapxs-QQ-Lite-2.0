@@ -12,6 +12,7 @@ import { fas } from '@fortawesome/free-solid-svg-icons'
 
 import { faSquare, faHeart } from '@fortawesome/free-regular-svg-icons'
 
+import './assets/css/motion.css'
 import './assets/css/view.css'
 import './assets/css/chat.css'
 import './assets/css/msg.css'

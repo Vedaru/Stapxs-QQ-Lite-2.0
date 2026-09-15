@@ -993,9 +993,16 @@
     width: 100%;
     margin-top: 10px;
     opacity: 0;
-    transform: translateY(-18px);
-    animation: qzone-feed-card-enter 0.3s ease-out forwards;
+    /* 和下面关键帧的 from 保持一致（原本这里是 -18px、关键帧是 -10px，两个值
+     * 对不上；因为 opacity 是 0 所以看不出来，顺手统一到同一档位移）。 */
+    transform: translateY(calc(-1 * var(--md-motion-distance-short)));
+    /* 卡片逐个进场。这条保留 @keyframes 而不是改成 transition：它需要 forwards
+     * 停在终态，还要靠 animation-delay 做错峰，过渡做不了这件事。关键帧本身
+     * 只碰 opacity 和 transform，是合成友好的。 */
+    animation: qzone-feed-card-enter var(--md-motion-enter) forwards;
 }
+/* M3 没有「错峰延迟」这一档令牌，六级的递增偏移就留字面量，只有时长和缓动
+ * 走上面的令牌。 */
 .qzone-feed-card:nth-child(6n + 1) { animation-delay: 0.02s; }
 .qzone-feed-card:nth-child(6n + 2) { animation-delay: 0.06s; }
 .qzone-feed-card:nth-child(6n + 3) { animation-delay: 0.1s; }
@@ -1160,7 +1167,7 @@
 @keyframes qzone-feed-card-enter {
     from {
         opacity: 0;
-        transform: translateY(-10px);
+        transform: translateY(calc(-1 * var(--md-motion-distance-short)));
     }
     to {
         opacity: 1;

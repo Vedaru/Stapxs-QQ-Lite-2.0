@@ -73,7 +73,9 @@ body {
     background: var(--color-bg);
     margin: -5px -5px 0 -65px !important;
     box-shadow: -5px 0px 4px -5px var(--color-shader);
-    transition: margin 0.3s;
+    /* 本文件是透明 UI 打开时动态载入的，载入瞬间这条 margin 会和 options.css
+     * 的默认值之间发生切换，过渡是给那一刻用的。 */
+    transition: margin var(--md-motion-change);
     height: calc(100% + 7px);
     padding: 10px 10px 0 10px;
 }

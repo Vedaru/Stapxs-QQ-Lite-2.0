@@ -158,8 +158,9 @@
 </script>
 
 <style scoped>
+    /* 过渡声明搬到了 assets/css/options.css 的基类上（见那里）。写在 :hover 里的话
+     * 鼠标移出时这条规则立刻失效，背景会瞬间跳回去，只有移入方向是渐变的。 */
     .opt-item:hover input[type='text'] {
         background: var(--color-card-2);
-        transition: background 0.2s;
     }
 </style>

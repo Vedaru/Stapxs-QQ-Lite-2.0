@@ -394,7 +394,8 @@
         cursor: pointer;
         height: 34px;
         padding: 0;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        /* 没有任何 hover / active / select 规则会改 transform 或 box-shadow，
+         * 所以这里不声明过渡，避免空转。 */
         width: 100%;
     }
 

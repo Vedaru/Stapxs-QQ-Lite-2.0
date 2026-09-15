@@ -670,10 +670,13 @@
         margin: 10px 0;
         border-radius: 7px;
 
+        /* 原本是 background / color / opacity 各 0.5s。这里只有 background 和
+         * opacity 真的会变（.me / .new 换底色，.opacity 压透明度）；color 是空转的
+         * —— 字色在子元素 span 上，而 span 没有过渡。0.5s 对「列表里这一条不再是
+         * 新消息了」这种状态切换来说太慢，收到 M3 的状态档。 */
         transition:
-            background 0.5s,
-            color 0.5s,
-            opacity 0.5s;
+            background var(--md-motion-state),
+            opacity var(--md-motion-state);
     }
     .danmu.opacity {
         opacity: 0.5;
@@ -716,7 +719,8 @@
     }
 
     .danmu-bg {
-        transition: opacity 0.7s;
+        /* .hidden 只改 opacity（0.1 → 0），是纯淡出，原本 0.7s 拖得太久。 */
+        transition: opacity var(--md-motion-change);
         width: 100%;
         height: calc(100% - 60px);
         border-radius: 7px;

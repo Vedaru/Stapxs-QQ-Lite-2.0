@@ -311,7 +311,9 @@ html {
 }
 .icon-list img {
     width: 55px;
-    transition: border .3s;
+    /* 上面 .selected 那条只改边框颜色，线宽恒为 3px；写 border 会让浏览器同时
+     * 监听 width/style/color 三个子属性。 */
+    transition: border-color var(--md-motion-state);
     border: 3px solid var(--color-card-2);
     border-radius: 15px;
 }

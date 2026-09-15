@@ -53,8 +53,11 @@ body {
     width: 95%;
 }
 .login-pan-card button.afd {
+    /* 愚人节的躲避按钮：App.vue 的 afd() 在每次 mousemove 上把它挪走。
+     * left/top 在这里只负责「初始落点」，真正的跑动走独立的 translate 属性
+     * —— 它是合成器属性，不触发布局；而 left/top 每帧改会强制重排。 */
     transform: translateX(calc(-50% + 25px));
-    transition: all 0.3s;
+    transition: translate var(--md-motion-change);
     position: fixed;
     width: 240px;
     left: 50vw;

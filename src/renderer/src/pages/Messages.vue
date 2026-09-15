@@ -630,10 +630,10 @@
         display: flex;
     }
 
-    .onmsg-enter-active,
-    .onmsg-leave-active,
+    /* 模板只写了 name="onmsg"，没有 .onmsg-enter-from / .onmsg-leave-to，
+     * 所以 enter / leave 没有起止状态可插值 —— 唯一会真的动的是列表重排。 */
     .onmsg-move {
-        transition: transform 0.4s;
+        transition: transform var(--md-motion-change);
     }
 
     .menu div.item > a {

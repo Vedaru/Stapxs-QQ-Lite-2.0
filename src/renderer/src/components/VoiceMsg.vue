@@ -399,7 +399,8 @@ onBeforeUnmount(() => {
     gap: 10px;
     cursor: pointer;
     border-radius: 10px;
-    transition: all 0.2s ease;
+    /* 只有 .loading 会改这里（opacity 0.7）；.playing / .me 改的都是子元素。 */
+    transition: opacity var(--md-motion-state);
 }
 
 .voice-msg.loading {
@@ -423,7 +424,8 @@ onBeforeUnmount(() => {
     background: rgba(var(--color-card-rgb), 0.5);
     color: var(--color-font-2);
     font-size: 11px;
-    transition: all 0.2s ease;
+    /* .me 和 .playing 只换背景与字色。 */
+    transition: background var(--md-motion-state), color var(--md-motion-state);
     padding-left: 2px;
 }
 
@@ -465,7 +467,13 @@ onBeforeUnmount(() => {
     border-radius: 999px;
     background: var(--color-font);
     opacity: 0.5;
-    transition: height 0.2s ease, background-color 0.12s linear, opacity 0.12s linear;
+    /* height 由模板的内联 style 每帧写入（:style="{ height: … + '%' }"），是频谱柱
+     * 的高低，必须保留 —— 换 scaleY 会把 999px 圆角的胶囊头一起压变形。
+     * background / opacity 由 .active 切换，属于状态反馈。 */
+    transition:
+        height var(--md-motion-change),
+        background var(--md-motion-state),
+        opacity var(--md-motion-state);
 }
 
 .voice-spectrum-bar.active {

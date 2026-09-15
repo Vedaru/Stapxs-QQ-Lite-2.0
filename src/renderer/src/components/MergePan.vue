@@ -103,21 +103,24 @@
 </script>
 
 <style scoped>
-    /* 消息动画 */
+    /* 消息动画。和 Chat.vue 里那套同名（各自 scoped，vue 的过渡类没法共用），
+     * 所以两边必须保持一致，改一处记得改另一处。位移距离收进令牌后，合并转发
+     * 面板原本更夸张的 -50px 归到了 --md-motion-distance-long（24px）。 */
     .msglist-move {
-        transition: all 0.3s;
+        transition: transform var(--md-motion-change);
     }
 
     .msglist-enter-active {
-        transition: all 0.4s;
+        transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
     }
 
+    /* leave-to 只改 opacity */
     .msglist-leave-active {
-        transition: all 0.2s;
+        transition: opacity var(--md-motion-exit);
     }
 
     .msglist-enter-from {
-        transform: translateX(-50px);
+        transform: translateX(calc(-1 * var(--md-motion-distance-long)));
         opacity: 0;
     }
 

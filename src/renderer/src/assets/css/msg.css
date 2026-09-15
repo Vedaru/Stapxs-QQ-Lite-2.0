@@ -5,7 +5,8 @@
 
 .message {
     user-select: text;
-    transition: background 0.3s, opacity 0.3s;
+    /* 选中高亮（.selected）和消息淡入都属于状态反馈，用 state 档。 */
+    transition: background var(--md-motion-state), opacity var(--md-motion-state);
     display: flex;
     padding: 5px 10px 10px 10px;
     width: calc(100% - 30px);
@@ -63,7 +64,7 @@
     display: none;
 }
 .message > div.sending.left.me > svg {
-    animation: rotate 1.5s linear infinite;
+    animation: rotate var(--md-motion-loop) infinite;
     color: var(--color-font-2);
     width: 0.8rem;
 }
@@ -648,7 +649,7 @@ span.user-title.robot {
     opacity: 0.0;
 }
 .loading > svg {
-    animation: rotate 1.5s linear infinite;
+    animation: rotate var(--md-motion-loop) infinite;
 }
 .loading > .show{
     opacity: 1.0;
@@ -746,7 +747,10 @@ span.user-title.robot {
 }
 
 .note-notify {
-    transition: border 0.5s;
+    /* .note.poking 只改边框颜色（transparent → --color-main），宽度和线型从不
+     * 变。原来写 `border` 会让浏览器监听三个子属性，且 buff 到 500ms 才亮；
+     * 收成 border-color，用 state 档（150ms）让提示更跟手。 */
+    transition: border-color var(--md-motion-state);
     border: 1px solid transparent;
 }
 .note-notify img {
@@ -824,7 +828,7 @@ span.user-title.robot {
         display: none;
     }
     .message > div.sending.right.me > svg {
-        animation: rotate 1.5s linear infinite;
+        animation: rotate var(--md-motion-loop) infinite;
         color: var(--color-font-2);
         width: 0.75rem;
     }

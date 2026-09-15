@@ -1183,7 +1183,8 @@
     z-index: 10;
 }
 .type-list > svg {
-    transition: all 0.3s;
+    /* .select 改的是背景和字色（见下面的 .type-list > svg.select）。 */
+    transition: background var(--md-motion-state), color var(--md-motion-state);
     cursor: pointer;
     color: var(--color-font);
     width: 15px;
@@ -1303,7 +1304,8 @@
 }
 
 .detail-list > .list > div {
-    transition: all 0.3s;
+    /* :hover 和 .select 都只改背景与字色。 */
+    transition: background var(--md-motion-state), color var(--md-motion-state);
     justify-content: space-between;
     cursor: pointer;
     margin: 0 1rem 5px 1rem;
@@ -1485,7 +1487,9 @@
         overflow-x: hidden;
     }
     .umami-info-pan > div:last-child > div:first-child {
-        transition: margin-left 0.3s;
+        /* 窄屏下这一栏靠 margin-left 推到 -100% 来整页切换；margin 是布局属性，
+         * 保留（换 transform 会让两栏同时占位、切换时高度跳变），只收令牌。 */
+        transition: margin-left var(--md-motion-change);
     }
     .umami-info-pan > div:last-child.select > div:first-child {
         margin-left: -100%;

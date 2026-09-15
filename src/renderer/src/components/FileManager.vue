@@ -483,7 +483,9 @@
         height: 100%;
         background: var(--color-main);
         border-radius: 2px;
-        transition: width 0.3s;
+        /* 宽度是布局属性，这里保留：进度条就是在动宽度（模板里绑的是
+         * style.width），换 transform: scaleX 会连圆角一起拉伸变形。 */
+        transition: width var(--md-motion-change);
     }
     .task-progress span {
         font-size: 0.7rem;
@@ -499,7 +501,7 @@
         cursor: pointer;
         font-size: 0.9rem;
         opacity: 0.6;
-        transition: opacity 0.2s;
+        transition: opacity var(--md-motion-state);
     }
     .task-actions svg:hover {
         opacity: 1;

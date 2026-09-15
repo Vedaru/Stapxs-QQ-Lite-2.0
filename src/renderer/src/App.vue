@@ -15,7 +15,6 @@
         :class="['top-bar', {
             'win': backend.platform == 'win32' && dev
         }]"
-        name="appbar"
         data-tauri-drag-region="true"
         @mousedown="handleAppbarMouseDown">
         <div class="bar-button" @click="barMainClick()" />
@@ -831,9 +830,11 @@ function afd(event: MouseEvent) {
                 y < mouseY &&
                 y + senderHeight > mouseY)
         )
-        // 设置按钮位置
-        sender.style.left = x + 'px'
-        sender.style.top = y + 'px'
+        // 设置按钮位置。这里写 translate 而不是 left/top：按钮的基准点由 CSS 的
+        // left: 50vw / top: 75vh 给出，translate 相对基准点偏移，落在合成器上，
+        // 每帧 mousemove 都不会引起重排。
+        sender.style.translate =
+            (x - docWidth / 2) + 'px ' + (y - docHeight * 0.75) + 'px'
     }
 }
 
@@ -1145,11 +1146,15 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 应用通知动画 */
+/* 应用通知动画。通知是个列表（TransitionGroup），move 管重排时的 FLIP 位移，
+ * 和「进入 / 离开」是两种语义，原来一条 `all 0.2s` 把它们混在一起了。 */
+.appmsg-enter-active {
+    transition: transform var(--md-motion-enter), opacity var(--md-motion-enter);
+}
+
 .appmsg-move,
-.appmsg-enter-active,
 .appmsg-leave-active {
-    transition: all 0.2s;
+    transition: transform var(--md-motion-exit), opacity var(--md-motion-exit);
 }
 
 .appmsg-leave-active {
@@ -1158,40 +1163,31 @@ onUnmounted(() => {
 
 .appmsg-enter-from,
 .appmsg-leave-to {
-    transform: translateX(-20px);
+    transform: translateX(calc(-1 * var(--md-motion-distance-medium)));
     opacity: 0;
-}
-
-/* 标题栏变更动画 */
-.appbar-enter-active,
-.appbar-leave-active {
-    transition: all 0.2s;
-}
-
-.appbar-enter-from,
-.appbar-leave-to {
-    transform: translateY(-60px);
 }
 
 /* 弹窗动画 */
 .modal-enter-active {
-    transition: opacity 0.2s ease-out;
+    transition: opacity var(--md-motion-enter);
 }
 
 .modal-leave-active {
-    transition: opacity 0.2s ease-in;
+    transition: opacity var(--md-motion-exit);
 }
 
 .modal-leave-to {
     opacity: 0;
 }
 
+/* 弹窗本体：面板上浮 / 下沉。enter 是 300ms 强调减速，leave 是 200ms 强调加
+ * 速 —— 和上面 .modal-* 的透明度用的是同一对令牌，两段动画因此严格同时结束。 */
 .modal-enter-active .pop-box-body {
-    animation: panelSlideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    animation: panelSlideUp var(--md-motion-enter);
 }
 
 .modal-leave-active .pop-box-body {
-    animation: panelSlideDown 0.2s cubic-bezier(0.4, 0, 0.6, 1);
+    animation: panelSlideDown var(--md-motion-exit);
 }
 
 .music-entry-small {
@@ -1239,15 +1235,19 @@ onUnmounted(() => {
     overflow: auto;
 }
 
-.music-player-float-enter-active,
+.music-player-float-enter-active {
+    transition: opacity var(--md-motion-enter), transform var(--md-motion-enter);
+}
+
 .music-player-float-leave-active {
-    transition: opacity 0.2s ease, transform 0.2s ease;
+    transition: opacity var(--md-motion-exit), transform var(--md-motion-exit);
 }
 
 .music-player-float-enter-from,
 .music-player-float-leave-to {
     opacity: 0;
-    transform: translateY(12px);
+    /* 悬浮播放器是「原地浮起」，用最短一档位移（8px），不用列表那种 16px。 */
+    transform: translateY(var(--md-motion-distance-short));
 }
 
 @media (max-width: 700px) {

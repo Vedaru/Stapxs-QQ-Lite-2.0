@@ -300,9 +300,12 @@
         height: unset;
     }
     .exp-body > header > div {
+        /* margin-right 是布局属性（0 → 10px），保留 —— 它把右侧那条指示条推开，
+         * 换 translate 会留下空白占位。另外同一元素还有一处 width: 0 → 5px 不在
+         * 过渡清单里，所以指示条的宽度是瞬间到位的，只有位移在渐变。 */
         transition:
-            margin-right 0.3s,
-            transform 0.3s;
+            margin-right var(--md-motion-change),
+            transform var(--md-motion-change);
         transform: scaleY(0);
         margin-right: 0;
         width: 0;

@@ -8,8 +8,15 @@ const { url } = defineProps<{ url: string }>()
 
 <style scoped lang="css">
 .tooltip-enter-active, .tooltip-leave-active {
-    transition: opacity 0.2s, transform 0.2s;
     transform-origin: bottom;
+}
+/* 浮层出场/退场沿用全应用统一的那一对令牌（进入慢、离开快）。这里没为提示
+ * 单独开一档时长：多一档就要多解释一次「什么时候该用哪档」，收益不值。 */
+.tooltip-enter-active {
+    transition: opacity var(--md-motion-enter), transform var(--md-motion-enter);
+}
+.tooltip-leave-active {
+    transition: opacity var(--md-motion-exit), transform var(--md-motion-exit);
 }
 .tooltip-enter-from, .tooltip-leave-to {
     opacity: 0;

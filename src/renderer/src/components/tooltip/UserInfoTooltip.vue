@@ -102,8 +102,13 @@ const titleClass = {
 
 <style scoped>
 .tooltip-enter-active, .tooltip-leave-active {
-    transition: opacity 0.2s, transform 0.2s;
     transform-origin: top;
+}
+.tooltip-enter-active {
+    transition: opacity var(--md-motion-enter), transform var(--md-motion-enter);
+}
+.tooltip-leave-active {
+    transition: opacity var(--md-motion-exit), transform var(--md-motion-exit);
 }
 .tooltip-enter-from, .tooltip-leave-to {
     opacity: 0;

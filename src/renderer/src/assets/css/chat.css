@@ -14,7 +14,11 @@ input {
     color: var(--color-font);
     flex-direction: column;
     pointer-events: none;
-    transition: all 0.3s;
+    /* 窄屏抽屉（.open 平移）、顶栏出现（.withBar 改 height/top）、全屏（.full）
+     * 都落在这条上。以前写 all，连 z-index 这种不能过渡的属性也一并列进去，
+     * 这里只列真正会变的四个。height/top/left 是布局属性，见文件开头说明。 */
+    transition: transform var(--md-motion-change), height var(--md-motion-change),
+        top var(--md-motion-change), left var(--md-motion-change);
     position: absolute;
     overflow: hidden;
     display: flex;
@@ -163,7 +167,7 @@ input {
 }
 .chat-pan > div.more {
     background: rgba(var(--color-card-rgb), 0.1);
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     pointer-events: all;
     position: absolute;
     bottom: 0px;
@@ -254,7 +258,9 @@ input {
     margin: -10px 15px 15px 15px;
     justify-content: center;
     align-items: center;
-    transition: all 0.3s;
+    /* .show 里 height 从 0 变成 unset：height:auto 本来就不可过渡，`all` 在这条
+     * 上唯一真正生效的是内边距。列出来免得读的人以为高度在动。 */
+    transition: padding var(--md-motion-enter);
     border-radius: 7px;
     overflow: hidden;
     display: flex;
@@ -282,7 +288,7 @@ input {
     }
 }
 .chat-pan > div.loading svg {
-    animation: rotate 1.5s linear infinite;
+    animation: rotate var(--md-motion-loop) infinite;
     color: var(--color-font);
     margin-right: 5px;
     margin-top: 2px;
@@ -371,7 +377,10 @@ input {
 }
 
 .more-detail {
-    transition: height 0.3s;
+    /* 展开是 0 → 50px，高度有确定值所以能过渡；但高度是布局属性，
+     * 展开时下方消息会跟着逐帧重排。这里保留（改成 transform 会让下面的
+     * 内容提前占位、动画结束时再跳一次），只把时长收进令牌。 */
+    transition: height var(--md-motion-enter);
     overflow: hidden;
     display: flex;
     margin-top: 0;
@@ -444,7 +453,9 @@ input {
 }
 .merge-pan > div:first-child {
     background: var(--color-card-2);
-    transition: background 0.5s;
+    /* 这里真正变的是 .show 时的 opacity（0 → 0.7）；原先是 transition: background
+     * 却从没改过 background，所以遮罩一直是硬切。改过来之后淡入才真的发生。 */
+    transition: opacity var(--md-motion-enter);
     opacity: 0;
     flex: 1;
 }
@@ -452,7 +463,7 @@ input {
     opacity: 0.7;
 }
 .merge-pan > div:last-child {
-    transition: transform 0.3s ease;
+    transition: transform var(--md-motion-enter);
     transform: translateX(100%);
     overflow: hidden;
     min-width: unset;
@@ -494,7 +505,7 @@ input {
     width: 100%;
 }
 .merge-pan .loading > svg {
-    animation: rotate 1.5s linear infinite;
+    animation: rotate var(--md-motion-loop) infinite;
     color: var(--color-main);
     width: 2rem;
     height: 2rem;
@@ -610,11 +621,13 @@ input {
     transition: none;
 }
 .chat-info-float-enter-active .chat-info {
-    animation: chatInfoPanelSlideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    animation: chatInfoPanelSlideUp var(--md-motion-duration-medium2)
+        var(--md-motion-easing-emphasized-decelerate);
     animation-fill-mode: both;
 }
 .chat-info-float-leave-active .chat-info {
-    animation: chatInfoPanelSlideDown 0.2s cubic-bezier(0.4, 0, 0.6, 1);
+    animation: chatInfoPanelSlideDown var(--md-motion-duration-short4)
+        var(--md-motion-easing-emphasized-accelerate);
     animation-fill-mode: both;
 }
 .chat-info {
@@ -771,7 +784,7 @@ input {
     padding: 0 20px;
 }
 .chat-info-tab-member > div {
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     align-items: center;
     border-radius: 7px;
     cursor: pointer;
@@ -807,16 +820,18 @@ input {
 }
 .chat-info-tab-member > div > span {
     color: var(--color-font-2);
-    transition: all .2s;
+    transition: transform var(--md-motion-state), opacity var(--md-motion-state);
     opacity: 1;
 }
 .chat-info-tab-member > div.edit:hover > span {
-    transform: translateX(-10px);
+    transform: translateX(calc(-1 * var(--md-motion-distance-short)));
     opacity: 0;
 }
 .chat-info-tab-member > div > svg {
     color: var(--color-font-2);
-    transition: all .2s;
+    /* 悬停时这个图标从 -25px 滑到 5px 并淡入，所以 margin-right 得跟着过渡；
+     * 它是布局属性，但只有这一个 15px 图标在动，代价可以接受。 */
+    transition: margin-right var(--md-motion-state), opacity var(--md-motion-state);
     margin-right: -25px;
     margin-left: 10px;
     width: 15px;
@@ -855,7 +870,7 @@ input {
 .user-config {
     display: flex;
     flex-direction: column;
-    transition: all 0.3s;
+    transition: transform var(--md-motion-enter);
     transform: translateY(calc(100% + 20px));
     box-shadow: 0 -3px 3px var(--color-shader);
     background: var(--color-card);
@@ -922,7 +937,7 @@ input {
 }
 .user-config > div:last-child > div:hover input {
     background: var(--color-card-2);
-    transition: all 0.3s;
+    transition: background var(--md-motion-state);
 }
 
 .user-config button {
@@ -934,7 +949,7 @@ input {
     padding: 0 20px;
 }
 .bulletins > div {
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     border-radius: 7px;
     padding: 10px 20px;
 }
@@ -1014,7 +1029,7 @@ input {
 }
 .bulletins > div.base > div.info {
     background: var(--color-card-1);
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     align-items: center;
     border-radius: 7px;
     padding: 10px 20px;
@@ -1047,7 +1062,7 @@ input {
     padding: 0 10px;
 }
 .group-files > div > div {
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     align-items: center;
     border-radius: 7px;
     flex-wrap: wrap;
@@ -1455,10 +1470,13 @@ input {
     width: 1rem;
 }
 
+/* 下面这几个 .xxx-tag 是一组：都在 .show 里从 height: 0 变 height: auto。
+ * height: auto 不可过渡，所以「展开」本来就是瞬时的，`all 0.3s` 实际上只在
+ * 缓动外边距和内边距。这里把清单写实，别让人以为高度也在动。 */
 .search-tag {
     background: var(--color-card-1);
     margin: 0 20px;
-    transition: all 0.3s;
+    transition: margin var(--md-motion-enter), padding var(--md-motion-enter);
     align-items: center;
     flex-direction: row;
     border-radius: 7px;
@@ -1489,7 +1507,7 @@ input {
     background: var(--color-card-1);
     justify-content: space-evenly;
     margin: 0 20px 10px 20px;
-    transition: all 0.3s;
+    transition: margin var(--md-motion-enter), padding var(--md-motion-enter);
     align-items: center;
     flex-direction: row;
     border-radius: 7px;
@@ -1535,7 +1553,7 @@ input {
 .replay-tag {
     background: var(--color-card-1);
     margin: 0 20px -10px 20px;
-    transition: all 0.3s;
+    transition: margin var(--md-motion-enter), padding var(--md-motion-enter);
     align-items: center;
     flex-direction: row;
     border-radius: 7px;
@@ -1545,20 +1563,27 @@ input {
 }
 
 .img-pan-enter-active {
-    animation: img-pan-appear 0.3s;
+    animation: img-pan-appear var(--md-motion-enter);
 }
 
 .img-pan-leave-active {
-    animation: img-pan-appear 0.3s reverse;
+    animation: img-pan-appear var(--md-motion-exit) reverse;
 }
 
+/* 原先是 height: 0 → calc(15vh + 0.9rem + 5px + 30px)，那个算式是在手算面板
+ * 的自然高度：图片 15vh + 说明文字 0.9rem + 边框 5px + 按钮 30px。图片一改尺寸
+ * 这个数就成了错的，而且高度是布局属性，0.3s 里每一帧都要重排整条消息列表。
+ * 改成只动 opacity 和 transform（都在合成器上）。代价是列表会先把位置让出来，
+ * 面板自己滑入 —— 布局只算一次，不再是每帧一次。 */
 @keyframes img-pan-appear {
     from {
-        height: 0;
+        opacity: 0;
+        transform: translateY(var(--md-motion-distance-medium));
     }
 
     to {
-        height: calc(15vh + 0.9rem + 5px + 30px);
+        opacity: 1;
+        transform: translateY(0);
     }
 }
 
@@ -1611,7 +1636,7 @@ input {
     height: 5mm;
     padding: 1mm;
     display: flex;
-    transition: background-color 0.3s;
+    transition: background-color var(--md-motion-state);
 }
 .img-pan > .imgs > div > .img-btns > div:nth-child(1) {
     margin-right: 1mm;
@@ -1661,7 +1686,7 @@ input {
 
 .input-special-tag {
     background: var(--color-card);
-    transition: all 0.3s;
+    transition: margin var(--md-motion-enter), padding var(--md-motion-enter);
     align-items: center;
     flex-direction: row;
     border-radius: 7px;
@@ -1704,7 +1729,7 @@ input {
     background: var(--color-card-1);
     transform-origin: bottom;
     transform: scaleY(0);
-    transition: all 0.3s;
+    transition: transform var(--md-motion-enter), margin var(--md-motion-enter);
     border-radius: 7px;
     overflow-y: scroll;
     max-height: 25vh;
@@ -1843,7 +1868,7 @@ div.tiny-session-body > div:nth-child(1) {
     margin-left: -10px;
     margin-right: 5px;
     background: var(--color-main);
-    transition: all 0.3s;
+    transition: transform var(--md-motion-state);
     transform: scaleY(0);
 }
 div.tiny-session-body.selected {
@@ -1928,7 +1953,9 @@ div.tiny-session-body > div:nth-child(3) > div > svg {
     box-shadow: 0 0 5px var(--color-shader);
     min-height: 40px !important;
     height: 40px !important;
-    transition: all 0.3s !important;
+    /* .open 里 height 40 → 100、margin-top -70 → -140。都是布局属性，
+     * 但 .respond 是消息输入框上方的一整条，没有别的表达方式；列清楚就好。 */
+    transition: height var(--md-motion-enter), margin-top var(--md-motion-enter) !important;
     margin-left: -12px;
 }
 .respond:hover {
@@ -1944,7 +1971,7 @@ div.tiny-session-body > div:nth-child(3) > div > svg {
 }
 .respond > span,
 .respond > img {
-    transition: background 0.3s;
+    transition: background var(--md-motion-state);
     border-radius: 7px;
     margin-right: 5px;
     padding: 5px;
@@ -2007,11 +2034,11 @@ div.tiny-session-body > div:nth-child(3) > div > svg {
     }
     .chat-info-float-enter-active .chat-info {
         animation: none;
-        transition: transform 0.3s;
+        transition: transform var(--md-motion-enter);
     }
     .chat-info-float-leave-active .chat-info {
         animation: none;
-        transition: transform 0.2s;
+        transition: transform var(--md-motion-exit);
     }
     .chat-info-float-enter-from .chat-info,
     .chat-info-float-leave-to .chat-info {

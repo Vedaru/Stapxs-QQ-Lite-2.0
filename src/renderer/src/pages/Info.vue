@@ -599,7 +599,7 @@ function canEditMember(role: string) {
 
     /* 成员项样式 */
     .member-item {
-        transition: background 0.3s;
+        transition: background var(--md-motion-state);
         margin: 0 20px -10px 20px;
         align-items: center;
         border-radius: 7px;
@@ -643,18 +643,24 @@ function canEditMember(role: string) {
 
     .member-item > span {
         color: var(--color-font-2);
-        transition: all .2s;
+        /* .member-item.edit:hover 下左移并淡出。 */
+        transition: transform var(--md-motion-state), opacity var(--md-motion-state);
         opacity: 1;
     }
 
     .member-item.edit:hover > span {
-        transform: translateX(-10px);
+        transform: translateX(calc(-1 * var(--md-motion-distance-short)));
         opacity: 0;
     }
 
     .member-item > svg {
         color: var(--color-font-2);
-        transition: all .2s;
+        /* margin-right 是布局属性（-25px → 5px 滑入），保留：它改的是元素占位，
+         * 换 translate 会和相邻文字的重排脱节。color 与 opacity 是状态反馈。 */
+        transition:
+            margin-right var(--md-motion-state),
+            color var(--md-motion-state),
+            opacity var(--md-motion-state);
         margin-right: -25px;
         margin-left: 10px;
         width: 15px;
