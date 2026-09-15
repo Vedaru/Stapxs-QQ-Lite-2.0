@@ -1,5 +1,6 @@
 <template>
-    <div v-if="success" class="msg-json" @click="openLink(parsedContent.jumpUrl)">
+    <div v-if="success" class="msg-json"
+        @click="parsedContent.jumpUrl && openLink(parsedContent.jumpUrl)">
         <p>{{ parsedContent.title }}</p>
         <span>{{ parsedContent.desc }}</span>
         <img :src="parsedContent.img" alt="">
@@ -68,21 +69,31 @@ const feed = z
                 title: z.string(),
                 tagIcon: z.string(),
                 tagName: z.string(),
-                forwardMessage: z.string(),
-                pcJumpUrl: z.string(),
+                // 服务端并不保证这两个字段存在：实测有卡片带着 title / cover /
+                // tagIcon / tagName 回来，却完全不带 forwardMessage 和 pcJumpUrl。
+                // 以前这里写死成必填，于是整张卡 safeParse 失败、直接退回
+                // 「加载失败: <id>」并刷一条 Card Parse Error，明明内容都在。
+                // 本目录的惯例就是拿不准的字段标 .optional()（见 Miniapp.vue、
+                // Forum.vue），这里对齐。少一个描述或跳转链接不该让整张卡报废。
+                forwardMessage: z.string().optional(),
+                pcJumpUrl: z.string().optional(),
             }),
         }),
         prompt: z.string(),
     })
-    .transform((o) => ({
-        title: o.meta.feed.title,
-        jumpUrl:
-            unpackNestedUrl(o.meta.feed.pcJumpUrl) ?? o.meta.feed.pcJumpUrl,
-        img: o.meta.feed.cover,
-        icon: o.meta.feed.tagIcon,
-        name: o.meta.feed.tagName,
-        desc: o.meta.feed.forwardMessage,
-    }))
+    .transform((o) => {
+        const pcJumpUrl = o.meta.feed.pcJumpUrl
+        return {
+            title: o.meta.feed.title,
+            // 没有 pcJumpUrl 就没有跳转目标，保持 undefined、由模板决定要不要绑
+            // 点击 —— openLink 不挡空值，直接传进去会开出 about:blank。
+            jumpUrl: pcJumpUrl ? unpackNestedUrl(pcJumpUrl) ?? pcJumpUrl : undefined,
+            img: o.meta.feed.cover,
+            icon: o.meta.feed.tagIcon,
+            name: o.meta.feed.tagName,
+            desc: o.meta.feed.forwardMessage,
+        }
+    })
 
 const json = JSON.parse(jsonData)
 const parsedData = feed.safeParse(json)

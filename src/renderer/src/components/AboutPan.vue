@@ -99,6 +99,7 @@
 
     import { markRaw, onMounted, ref } from 'vue'
     import { openLink, sendStatEvent, showReleaseHistory } from '@renderer/function/utils/appUtil'
+    import { Logger } from '@renderer/function/base'
     import { ContributorElem } from '@renderer/function/elements/system'
 
     import { getTrueLang, getViewTime } from '@renderer/function/utils/systemUtil'
@@ -183,6 +184,10 @@
             fetch(`https://api.github.com/repos/${import.meta.env.VITE_APP_REPO_NAME}/contributors`)
                 .then((response) => response.json())
                 .then((data: { [key: string]: string }[]) => {
+                    // 同一类问题：GitHub 限流或网关降级时会返回 HTML / 错误对象，
+                    // data 不是数组，data.length 直接抛。这里也只是「可选装饰信息」，
+                    // 拿不到就什么都不加，不要让它把整个面板带崩。
+                    if (!Array.isArray(data)) return
                     for (let i = 0; i < data.length; i++) {
                         constList.value.push({
                             url: data[i].avatar_url,
@@ -194,13 +199,26 @@
                         })
                     }
                 })
+                .catch((err) => {
+                    new Logger().error(err as Error, '加载贡献者信息失败')
+                })
         }
         // 加载赞助者信息
         if(import.meta.env.VITE_APP_SPONSORS_DATA_API) {
             fetch(import.meta.env.VITE_APP_SPONSORS_DATA_API)
                 .then((response) => response.json())
-                .then((data: { [key: string]: string }) => {
-                    sponsorList.value = data.list as any
+                .then((data: { list?: unknown }) => {
+                    // sponsorList 声明的是数组，这里以前直接写 data.list as any。
+                    // 接口一旦没回 list 字段（换了返回结构、被网关拦成了 HTML、
+                    // 或者干脆返回了错误对象），ref 就被改成 undefined，模板里的
+                    // sponsorList.length 随即抛 TypeError —— 而且是在 render 里抛，
+                    // 每次重渲染都会再炸一遍。保持「这个 ref 永远是数组」的约定，
+                    // 拿不到就维持空数组。
+                    const list = data?.list
+                    sponsorList.value = Array.isArray(list) ? list as typeof sponsorList.value : []
+                })
+                .catch((err) => {
+                    new Logger().error(err as Error, '加载赞助者信息失败')
                 })
         }
     })

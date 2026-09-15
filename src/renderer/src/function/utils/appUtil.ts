@@ -1060,8 +1060,24 @@ export function checkNotice() {
         time: new Date().getTime().toString(),
     } as Record<string, string>
     fetch(url + '?' + new URLSearchParams(fetchData).toString())
-        .then((response) => response.json())
+        .then(async (response) => {
+            // DEV 下 url 指向 notice_local.json —— 那是个被 .gitignore 排除的本地
+            // 文件，本机没有。请求不存在的路径会被 Vite 的 SPA 回退兜住，拿到的是
+            // 200 + text/html 的 index.html，response.ok 为真，response.json() 随后
+            // 抛「Unexpected token '<'」；这条链又没有 catch，就变成控制台里一条
+            // 每次启动都刷的 Uncaught (in promise)。所以这里先自己消化掉解析失败：
+            // 公告本来就只是锦上添花，拿不到就当没有，别报错。
+            if (!response.ok) return null
+            try {
+                return await response.json()
+            } catch {
+                return null
+            }
+        })
         .then((data) => {
+            // 上面拿不到 JSON 会回 null；另外接口若被网关换成别的结构，forEach
+            // 也会直接抛。形状不对就整段跳过。
+            if (!Array.isArray(data)) return
             // 获取已显示过的公告 ID
             let noticeShow = [] as number[]
             const showId = localStorage.getItem('notice_show')
