@@ -863,7 +863,10 @@ onMounted(() => {
     updateList(list.length, 0)
     watch(() => list.map((item) => item.message_id + '_' + item.fake_msg),
         (newIds, oldIds = []) => {
-            updateList(newIds.length, oldIds.length)
+            // 把列表头的 key 一并交给 updateList：靠「头部有没有换人」就能判断这次
+            // 变更是在前面插了历史、还是在后面接了新消息 —— 只看长度差区分不出来，
+            // 而这两件事对滚动位置的处理正好相反。
+            updateList(newIds.length, oldIds.length, newIds[0], oldIds[0])
         },
     )
     // 这里原本有一组 watch(nowGetHistory / canLoadHistory / loadHistoryFail)，在
@@ -1198,13 +1201,14 @@ function scrollToMsgLocal(message_id: string) {
 
 /**
  * 图片解码完成、把消息撑高之后补一次滚动。
- * @param height 图片撑开的高度
+ * @param height 图片这次解码撑开的高度（MsgBody 只在框没预占位时才发这个事件，
+ *               所以这里拿到的就是真实的撑开量，不是整张图的高度）
  * @param imgTop 图片顶边的位置（视口坐标，由 MsgBody 随事件带出）
  *
  * 这是 WebKitGTK 版「滚动锚定」的手写替身 —— chat.css 里 `.chat-pan > div.chat`
  * 为什么关掉 overflow-anchor，那条注释解释了。锚点是面板顶边上那一点内容，判据
- * 只有一条：图片解码前高度是 0，所以顶上那点内容要么就是图片本身，要么在图片下沿
- * 更靠下的地方，绝不会在图片上方。
+ * 只有一条：没预占位的图解码前高度是 0，所以顶上那点内容要么就是图片本身，要么
+ * 在图片下沿更靠下的地方，绝不会在图片上方。
  *
  * - 图片顶边在面板顶边以上（imgTop <= panTop）：顶上那点内容是图片或更靠下的东西，
  *   图片一撑开，它们整体下移整整一个 height，所以要补回整个 height。
@@ -2404,7 +2408,22 @@ function sendMsg(echo = 'sendMsgBack') {
     scheduleResizeMainInput(undefined, true)
 }
 
-function updateList(newLength: number, oldLength: number) {
+function updateList(
+    newLength: number,
+    oldLength: number,
+    newHead?: string,
+    oldHead?: string,
+) {
+    // 头部换人 = 这次变更往列表上方插了内容（历史记录往上涨）。这个判断不能用
+    // uiStore.nowGetHistory：那面旗子表示「有一次历史请求在飞」，而一次请求会分
+    // 几批落到列表里（先本地库、后网络）。旗子只会在最后收起，早先却由这里顺手
+    // 清掉 —— 于是后到的那批历史（真正插入 20 条、位移最大的那批）进来时旗子已经
+    // 落下，补偿被整段跳过，列表就往前跳一下。改用数据本身判断：头部 key 变了就是
+    // 往上长的，无论它由哪一批插进来、什么时候插进来。
+    // 首屏加载 oldLength 为 0，不算往上长（历史 0 条，头部无意义）。
+    const prepended =
+        oldLength > 0 && newLength > oldLength && newHead !== oldHead
+
     if (oldLength == 0 && newLength > 0) {
         const name =
             authStore.jsonMap.set_message_read?.name ?? undefined
@@ -2474,7 +2493,7 @@ function updateList(newLength: number, oldLength: number) {
         nextTick(() => {
             const newPan = document.getElementById('msgPan')
             if (newPan !== null) {
-                if (uiStore.nowGetHistory) {
+                if (prepended) {
                     // 让视口里那一屏保持不动：插入到上方的高度（新高度 − 旧高度）
                     // 必须加在原来的滚动位置上，不能只写差值 —— 只写差值等于假设
                     // 当前恰好停在顶部，而加载开始时浏览器可能已经因为「加载中」
@@ -2483,8 +2502,7 @@ function updateList(newLength: number, oldLength: number) {
                         top + (newPan.scrollHeight - height),
                         false,
                     )
-                }
-                if (!uiStore.nowGetHistory) {
+                } else {
                     if (!tags.value.showBottomButton) {
                         scrollTo(newPan.scrollHeight)
                     }
@@ -2492,7 +2510,6 @@ function updateList(newLength: number, oldLength: number) {
                         scrollTo(newPan.scrollHeight, false)
                     }
                 }
-                uiStore.nowGetHistory = false
             }
 
             const getImgList = () => {

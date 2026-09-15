@@ -760,10 +760,24 @@ async function imageLoaded(event: Event) {
     }
 
     img.style.setProperty('--width', `${imgWidth}px`)
+    // 父级要的是「这次解码把内容撑开了多少」，不是「这张图有多高」—— 两者只有在
+    // 框还没占位时才相等。preSize 给缓存命中的图绑过 width / height 属性（Vue 对
+    // img 的这两个键特意走 attribute 而不是 property，见 runtime-dom 的
+    // shouldSetAsProp），它的框在解码前就已经是最终高度，解码撑开量是 0；不绑属性的
+    // 图才是真的从 0 长出来的，撑开量就是它自己的高度。
+    //
+    // 原先一律补整个高度，于是每张缓存命中的图都会把列表反向推一次 —— 缓存越全、
+    // 图越多，抖得越厉害，正好把 preSize 提前占位的收益全部抵消掉。src 从代理地址
+    // 换成解析后地址时会再触发一次 load，那次的框也已经定了（换 src 要经过一次
+    // 渲染，而渲染时 preSize 已经在按缓存绑属性了），同样不该补。
+    const reservedBox =
+        img.hasAttribute('width') && img.hasAttribute('height')
     // 除了撑开的高度，还要把顶边位置（视口坐标）一起给出去：父级得知道这张图是
     // 长在聊天面板顶边以上、还是就长在可见区域里，才知道该不该补滚动。此处读
     // 顶边是同步的，和父级接着读面板顶边之间不可能插进一次滚动。
-    emit('imageLoaded', img.offsetHeight, img.getBoundingClientRect().top)
+    if (!reservedBox) {
+        emit('imageLoaded', img.offsetHeight, img.getBoundingClientRect().top)
+    }
 }
 
 function imgLoadFail(event: Event) {

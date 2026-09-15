@@ -862,10 +862,11 @@ const msgFunctions = {
                 app.config.globalProperties.$t('获取历史记录失败'),
             )
             uiStore.loadHistoryFail = true
+            uiStore.nowGetHistory = false
             return
         }
         // 无论是否有本地预填充，都以网络数据替换（保证最新消息不遗漏）
-        saveMsg(msg)
+        settleHistoryRequest(saveMsg(msg))
     },
     getChatHistoryGapFill: (
         _: string,
@@ -906,12 +907,12 @@ const msgFunctions = {
             uiStore.nowGetHistory = false
             return
         }
-        // 滚动位置的修正在消息列表的 watcher 里做（Chat.vue 的 updateList）：
-        // 它在列表变更的同一个 tick 内按新增高度补偿 scrollTop。这里原本还有
-        // 一份 setTimeout(200) 的补偿，会在 200ms 后再写一次 scrollTop —— 那时
-        // 「加载中」时间戳已经被移除、内容高度已经缩回，算出来的值和第一次不
-        // 一样，等于在抖动之后又补跳一下。保留一份即可。
-        saveMsg(msg, 'top')
+        // 滚动位置的修正由 Chat.vue 的 updateList 负责：它按列表头有没有换人判断
+        // 这次变更是不是「往上插了历史」，并在同一个 tick 内按新增高度补偿 scrollTop。
+        // 这里原本还有一份 setTimeout(200) 的补偿 —— 200ms 后再写一次 scrollTop，那时
+        // 「加载中」时间戳已经移除、内容高度已经缩回，算出来的值和第一次不一样，等于
+        // 抖动之后再补跳一下；而且它写的是「新高度 − 旧高度」，等于假设用户还停在顶部。
+        settleHistoryRequest(saveMsg(msg, 'top'))
     },
 
     getChatHistoryOnMsg: (
@@ -1682,6 +1683,23 @@ function saveClassInfo(
     }
 
     settingsStore.classes = list
+}
+
+/**
+ * 历史请求的收尾。`uiStore.nowGetHistory` 的语义是「有一次历史请求在飞」，而一次
+ * 请求会分几批落到列表里（先本地库、后网络），所以必须等网络数据应用完再收。
+ * 早收的后果有二：后到的那批历史失去滚动补偿（那时旗子已经落下），以及用户滚回
+ * 顶部时能提前再触发一次 loadMoreHistory，把同一个请求发两遍。
+ */
+function settleHistoryRequest(task: Promise<void>) {
+    const uiStore = useUIStore()
+    void task
+        .catch((e: Error) => {
+            logger.error(e, '处理历史记录失败')
+        })
+        .finally(() => {
+            uiStore.nowGetHistory = false
+        })
 }
 
 async function saveMsg(msg: any, append = undefined as undefined | string) {
