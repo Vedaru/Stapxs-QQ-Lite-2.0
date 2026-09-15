@@ -604,6 +604,67 @@ const noticeFunctions = {
     },
 } as { [key: string]: (name: string, msg: { [key: string]: any }) => void }
 
+/**
+ * 正在补拉（或已经补拉过）的回复目标 id。补拉是按需触发的 —— 只有划到视口附近的
+ * 回复行才会请求 —— 这份集合同时就是去重表，免得同一行反复入队；确认拿不到的消息
+ * 会在 replyPreviewMap 里落一个 null，记住别再问。
+ */
+const replyPreviewPending = new Set<string>()
+
+/**
+ * 请求补拉一条回复的目标消息。回复段本身只带一个 id（见 appUtil 的 parseMsg），
+ * 目标没被分页窗口加载进来时正文就不在手上，预览自然没得渲染。
+ * 复用和 sendMsgBack 相同的那次 get_msg 单条拉取，结果落进 replyPreviewMap。
+ *
+ * 补拉结果不直接进 messageList：那只是「预览要用的正文」，而 messageList 是分页
+ * 窗口 —— 一屏里挂几十条老回复，每条都往窗口里插一行的话，列表会被搅得面目全非。
+ * 窗口要变只在一个明确时刻变，就是用户点引用要跳过去的时候，见 promoteReplyTarget。
+ */
+export function requestReplyPreview(messageId: string) {
+    if (!messageId) return
+    const chatStore = useChatStore()
+    if (replyPreviewPending.has(messageId)) return
+    if (chatStore.replyPreviewMap.has(messageId)) return
+    const authStore = useAuthStore()
+    replyPreviewPending.add(messageId)
+    Connector.send(
+        authStore.jsonMap.get_message.name ?? 'get_msg',
+        { message_id: messageId },
+        'replyPreview_' + messageId,
+    )
+}
+
+/**
+ * 把补拉缓存里的回复目标提升成 messageList 里正式的一行。
+ *
+ * 点回复引用要「跳」到目标消息，而跳转是拿 chat-<id> 找 DOM 的（见 appUtil 的
+ * scrollToMsg）—— 光有缓存副本没有 DOM，跳不过去。所以点的时候把这一条插进列表，
+ * 它才成为一个真正的行。
+ *
+ * 插入位置按时间排（mergeMessagesByIdAndTime 就是干这个的），顺序不会乱；续拉的
+ * 锚点是 list[0]，补进来的目标一定比窗口内所有消息都老，锚点跟着变老正是该继续
+ * 往前翻的方向。目标与窗口之间那段没加载的消息会留个空档 —— 它本来就不可见
+ * （列表不画空档），往上翻时 loadMoreHistory 会从新的 list[0] 接着往前拉。
+ *
+ * @returns 是否真的插进去了（已经在列表里 → false）
+ */
+export function promoteReplyTarget(message: any): boolean {
+    const chatStore = useChatStore()
+    const id = normalizeMessageId(message?.message_id)
+    if (!id) return false
+    if (
+        chatStore.messageList.some(
+            (item) => normalizeMessageId(item?.message_id) === id,
+        )
+    ) {
+        return false
+    }
+    replaceMessageListInPlace(
+        mergeMessagesByIdAndTime(chatStore.messageList, [message]),
+    )
+    return true
+}
+
 const msgFunctions = {
     /**
      * 修改群成员信息回调
@@ -984,6 +1045,55 @@ const msgFunctions = {
                 { message_id: msg.message_id },
                 'getSendMsg_' + msg.message_id,
             )
+        }
+    },
+
+    /**
+     * 回复预览补拉的结果
+     */
+    replyPreview: (
+        _: string,
+        msg: { [key: string]: any },
+        echoList?: string[],
+    ) => {
+        const chatStore = useChatStore()
+        const messageId = echoList?.[1]
+        if (!messageId) return
+        // 有人正等着跳到这条消息上（点引用时挂的 show.jump 就是这个 id）：补到的
+        // 那一刻把它提升成正式一行 —— 列表一变，updateList 里的 show.jump 分支
+        // 就会把视口滚过去；拿不到就把意图撤掉，否则留着只会在下一次列表变化时
+        // 去滚一个不存在的元素。
+        // 每次落地都现读 show.jump，不在入口处提前算：等待期间用户随时可能点上来。
+        const settleJump = (target: any) => {
+            if (String(chatStore.chatInfo.show.jump) !== messageId) return
+            if (target) promoteReplyTarget(target)
+            else chatStore.chatInfo.show.jump = undefined
+        }
+        // 拿不到（超时、报错、或返回里没有这条）就记一个 null：预览保持占位，
+        // 但别再对着同一条反复请求。
+        const giveUp = () => {
+            replyPreviewPending.delete(messageId)
+            chatStore.replyPreviewMap.set(messageId, null)
+            settleJump(null)
+        }
+        try {
+            const raw = getMsgData(
+                'message_list',
+                buildMsgList([msg.data]),
+                msgPath.message_list,
+            )
+            getMessageList(raw)
+                .then((list) => {
+                    const target = list?.find(
+                        (item) => item.message_id?.toString() === messageId,
+                    )
+                    replyPreviewPending.delete(messageId)
+                    chatStore.replyPreviewMap.set(messageId, target ?? null)
+                    settleJump(target)
+                })
+                .catch(giveUp)
+        } catch {
+            giveUp()
         }
     },
     sendFileBack: (

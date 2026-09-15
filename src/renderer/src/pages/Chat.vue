@@ -105,7 +105,7 @@
                             :image-list-header="chatImg"
                             @click="msgClick($event, msgIndex)"
                             @show-menu="showMsgMeun"
-                            @scroll-to-msg="scrollToMsg"
+                            @jump-reply="jumpToReply"
                             @image-loaded="imgLoadedScroll"
                             @left-move="replyMsg"
                             @send-poke="sendPoke" />
@@ -135,7 +135,7 @@
                             :key="msgIndex.fake_message_id ?? msgIndex.message_id"
                             :selected="multipleSelectList.includes(msgIndex.message_id) || tags.menuDisplay.menuSelectedMsgId == msgIndex.message_id"
                             :data="msgIndex"
-                            @scroll-to-msg="scrollToMsg"
+                            @jump-reply="jumpToReply"
                             @show-menu="showMsgMeun"
                             @image-loaded="imgLoadedScroll"
                             @left-move="replyMsg" />
@@ -625,6 +625,7 @@ import {
     getDifferencesWithRanges
 } from '@renderer/function/utils/msgUtil'
 import { Logger, LogType, PopInfo, PopType } from '@renderer/function/base'
+import { promoteReplyTarget, requestReplyPreview } from '@renderer/function/msg'
 import { Connector } from '@renderer/function/connect'
 import {
     BaseChatInfoElem,
@@ -1240,6 +1241,44 @@ function scrollToMsgLocal(message_id: string) {
     if (!scrollToMsg(message_id, true)) {
         new PopInfo().add(PopType.INFO, $t('无法定位上下文'))
     }
+}
+
+/**
+ * 点回复引用 → 跳到被引用的那条消息。
+ *
+ * 目标就在分页窗口里时，这就是一次普通的滚动。不在窗口里的时候不能就这么算了
+ * —— 以前这里直接绑 appUtil 的 scrollToMsg，取不到元素就静默返回 false，点了
+ * 毫无反应；而「被引用的消息不在窗口里」恰恰是常态，引用的多半是很久以前的
+ * 那条。好在回复预览的按需补拉已经把它捞回来了，缓存里就有一份副本（replyPreviewMap）：
+ * 把它提升成列表里正式的一行（promoteReplyTarget），列表一变，updateList 里
+ * 消费 show.jump 的那段就会把视口滚过去 —— 滚动的时机由「行真的渲染出来了」
+ * 决定，这里不用自己算 nextTick。
+ *
+ * 点得比补拉的回包还快时缓存里还是空的：先挂上跳转意图（show.jump）再补拉，
+ * 补到的那一刻由 msg.ts 里的 replyPreview 提升，同样接上那条滚动路径。补拉
+ * 已经确认失败（缓存里是 null）才提示定位不到。
+ */
+function jumpToReply(message_id: string) {
+    if (!message_id) return
+    if (scrollToMsg('chat-' + message_id, true)) return
+    const key = String(message_id)
+    const cached = chatStore.replyPreviewMap.get(key)
+    if (cached) {
+        chatStore.chatInfo.show.jump = message_id
+        if (!promoteReplyTarget(cached)) {
+            // 提升不进去（比如目标行没渲染成消息，或者列表正处在搜索态），
+            // 别把跳转意图留在身上等下一次列表变化时才炸
+            chatStore.chatInfo.show.jump = undefined
+            new PopInfo().add(PopType.INFO, $t('无法定位上下文'))
+        }
+        return
+    }
+    if (chatStore.replyPreviewMap.has(key)) {
+        new PopInfo().add(PopType.INFO, $t('无法定位上下文'))
+        return
+    }
+    chatStore.chatInfo.show.jump = message_id
+    requestReplyPreview(key)
 }
 
 /**
@@ -2509,7 +2548,11 @@ function updateList(
     if (
         tags.value.showBottomButton &&
         !uiStore.nowGetHistory &&
-        oldLength > 0
+        oldLength > 0 &&
+        // 列表是往上长的就不算「来了新消息」——新消息一律接在近端。之前只排除了
+        // 正在飞的历史请求，漏掉了别的往列表头插的路径（补间隙、以及点回复引用
+        // 跳转时把目标提升进来），于是那些插入会凭空多出「N 条新消息」的角标。
+        !prepended
     ) {
         if (NewMsgNum.value !== 0) {
             NewMsgNum.value =

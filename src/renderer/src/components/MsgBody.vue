@@ -260,7 +260,7 @@
                         <div v-else-if="item.type == 'reply'"
                             v-show="type != 'body'"
                             :class="isMe ? type == 'merge' ? 'msg-replay' : 'msg-replay me' : 'msg-replay'"
-                            @click="scrollToMsg(item.id)">
+                            @click="jumpToReply(item.id)">
                             <div>
                                 <span>{{ getMsgInfo(item.id) }}</span>
                                 <font-awesome-icon v-if="getMsgInfo(item.id) != ''" :icon="['fas', 'turn-up']" />
@@ -269,7 +269,7 @@
                                 :data="getMsg(item.id, true)"
                                 :type="'body'"
                                 :global-me="isMe ? 'Y' : ''" />
-                            <a v-else class="msg-unknown">
+                            <a v-else v-reply-backfill="replyPreviewNeed(item.id)" class="msg-unknown">
                                 {{ getMsgStr(item.id) != '' ? getMsgStr(item.id) : $t('（查看回复消息）') }}
                             </a>
                         </div>
@@ -415,6 +415,7 @@ import {
 	VMoveOptions,
 } from '@renderer/function/utils/appUtil'
 import { vUserTooltip } from '@renderer/function/tooltip'
+import { vReplyBackfill } from '@renderer/function/replyPreview'
 import {
     getForegroundToneGridFromImageUrl,
     getSizeFromBytes,
@@ -471,7 +472,7 @@ provide('message-content', data)
 const { viewer: viewerRef } = inject<{ viewer: any }>('viewer', { viewer: null })
 
 const emit = defineEmits<{
-    scrollToMsg: [...args: any[]]
+    jumpReply: [message_id: string]
     imageLoaded: [...args: any[]]
     sendPoke: [...args: any[]]
     leftMove: [msg: Msg]
@@ -626,8 +627,25 @@ function getAtName(item: { [key: string]: any }) {
     }
 }
 
-function scrollToMsg(id: string) {
-    emit('scrollToMsg', 'chat-' + id)
+/**
+ * 点回复引用 → 把目标消息 id 交给聊天页去定位。
+ *
+ * 这里只传 id，不拼 chat- 前缀：目标可能压根不在当前分页窗口里（引用的多半是
+ * 老消息），定位它要拉取甚至要把它提升进列表，那套上下文只有 Chat.vue 有。
+ */
+function jumpToReply(id: string) {
+    emit('jumpReply', id)
+}
+
+/**
+ * 这一行的回复目标还没在手上就返回要补拉的 id，否则返回空串。
+ * 只看「在不在分页窗口里」：缓存里已经有、或者已经确认拿不到的，都不再请求。
+ */
+function replyPreviewNeed(message_id: string) {
+    if (!message_id) return ''
+    if (chatStore.messageList.some((item) => item.message_id == message_id)) return ''
+    if (chatStore.replyPreviewMap.has(String(message_id))) return ''
+    return String(message_id)
 }
 
 function imgStyle(length: number, at: number, isFace: boolean) {
@@ -955,34 +973,41 @@ function hiddenUserInfo() {
     }
 }
 
-function getMsgInfo(message_id: string) {
+/**
+ * 按 id 找一条消息：先看分页窗口，再看回复预览的补拉缓存。
+ * 缓存里 null 表示确认拿不到，此时返回 null，预览保持占位。
+ */
+function findMsg(message_id: string) {
     const list = chatStore.messageList.filter((item) => {
         return item.message_id == message_id
     })
-    if (list.length === 1 && list[0].message.length > 0) {
+    if (list.length === 1) return list[0]
+    return chatStore.replyPreviewMap.get(String(message_id)) ?? null
+}
+
+function getMsgInfo(message_id: string) {
+    const msg = findMsg(message_id)
+    if (msg && msg.message.length > 0) {
         const time = Intl.DateTimeFormat(trueLang,
-                getTimeConfig(new Date(getViewTime(list[0].time))))
-            .format(getViewTime(getViewTime(list[0].time)))
-        return (list[0].sender.nickname + ' ' + time)
+                getTimeConfig(new Date(getViewTime(msg.time))))
+            .format(getViewTime(getViewTime(msg.time)))
+        return (msg.sender.nickname + ' ' + time)
     }
     else return ''
 
 }
 
 function getMsgStr(message_id: string) {
-    const list = chatStore.messageList.filter((item) => {
-        return item.message_id == message_id
-    })
-    if (list.length === 1) {
-        return getMsgRawTxt(list[0])
+    const msg = findMsg(message_id)
+    if (msg) {
+        return getMsgRawTxt(msg)
     }
     return ''
 }
 
 function getMsg(message_id: string, filter: boolean = false) {
-    const list = chatStore.messageList.filter((item) => {
-        return item.message_id == message_id
-    })
+    const found = findMsg(message_id)
+    const list = found ? [found] : []
     if (list.length === 1) {
         const msg = toRaw(list[0])
         const textFallbackTypes = new Set([
