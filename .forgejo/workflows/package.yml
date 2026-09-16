@@ -223,13 +223,46 @@ jobs:
           # 一次就烧掉五分钟，烧完还是失败。30s 够一次正常握手，卡住就赶紧换下次。
           #
           # --retry 只给 GET。重投一个 multipart POST 有重复落库的语义问题，而
-          # 上传本来就在 shell 里有 3 次机会，并且明确接受同名资源重复、事后按 id
-          # 扫掉旧的 —— 那条路径一行不动。彻底连不上时 curl 仍然会吐出 000，
-          # 各调用点已经把它当「非预期结果」处理（`case` 落到 `*)`、`!= 201`），
-          # 不会静默当成成功。
+          # 上传本来就在 shell 里有重试，并且明确接受同名资源重复、事后按 id
+          # 扫掉旧的 —— 那条路径一行不动。
+          #
+          # 连不上时 curl 的 -w 什么都不打印，所以 $? 取到的会是空串。统一补成
+          # 000（curl 对「一个字节都没换到响应」的约定），调用点的 `case` 落到
+          # `*)`、`!= 201` 都还是照旧报错，只是日志里从「HTTP 」变成「HTTP 000」。
           api_get() {
-            curl -4 -sS --connect-timeout 30 --retry 3 --retry-all-errors \
-                 --retry-connrefused "$@" || true
+            local out rc=0
+            out=$(curl -4 -sS --connect-timeout 30 --retry 3 --retry-all-errors \
+                       --retry-connrefused "$@") || rc=$?
+            printf '%s' "${out:-000}"
+          }
+
+          # 从一段 JSON 里取 "id"，取不到就退出 3 并把原因打到 stderr，绝不抛
+          # traceback。调用点都在「东西已经在服务端了」之后，那里一个读不动的
+          # 响应体不该判死整步。
+          json_id() {
+            python3 - "$1" <<'PY'
+          import json, sys
+          try:
+              print(json.load(open(sys.argv[1]))["id"])
+          except Exception as exc:
+              print(f"  could not read the id out of {sys.argv[1]}: {exc}", file=sys.stderr)
+              sys.exit(3)
+          PY
+          }
+
+          # 同上，但列的是「除 $2 之外还叫 $3 的资源 id」——旧的上传残留。
+          stale_ids() {
+            python3 - "$1" "$2" "$3" <<'PY'
+          import json, sys
+          try:
+              assets = json.load(open(sys.argv[1]))
+              stale = [str(a["id"]) for a in assets
+                       if a.get("name") == sys.argv[3] and str(a.get("id")) != sys.argv[2]]
+          except Exception as exc:
+              print(f"  could not read the asset listing {sys.argv[1]}: {exc}", file=sys.stderr)
+              sys.exit(3)
+          print("\n".join(stale))
+          PY
           }
 
           version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' \
@@ -278,12 +311,14 @@ jobs:
               # 同样不能漏给 set -e：`|| http=''` 让下面那条 != 201 去报错，
               # 而不是让 curl 的码替脚本说话。建 release 本身是 find-or-create，
               # 真失败了整步重跑一次也是干净的。
+              rc=0
               http=$(curl -4 -sS --connect-timeout 30 -o "$RUNNER_TEMP/release.json" \
                           -w '%{http_code}' -X POST "${auth[@]}" \
                           -H 'Content-Type: application/json' \
-                          --data-binary "@$RUNNER_TEMP/new-release.json" "$api/releases") || http=''
+                          --data-binary "@$RUNNER_TEMP/new-release.json" "$api/releases") || rc=$?
+              http=${http:-000}
               if [ "$http" != 201 ]; then
-                echo "creating release $tag failed: HTTP $http" >&2
+                echo "creating release $tag failed: HTTP $http (curl exit $rc)" >&2
                 cat "$RUNNER_TEMP/release.json" >&2
                 exit 1
               fi
@@ -293,8 +328,11 @@ jobs:
                 exit 1 ;;
           esac
 
-          id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
-                    "$RUNNER_TEMP/release.json")
+          # Loud here, on purpose: nothing has been uploaded yet, so a release
+          # we cannot name the id of is a real failure rather than something to
+          # paper over. json_id only keeps it from arriving as a traceback.
+          id=$(json_id "$RUNNER_TEMP/release.json") || id=''
+          [ -n "$id" ] || { echo "the release lookup named no release id" >&2; exit 1; }
           echo "release id $id"
 
           # Upload first, and never delete up front. The gap between a DELETE
@@ -309,7 +347,7 @@ jobs:
           # while reading`); that is a transient for the job to absorb rather
           # than the reason to report a failure.
           #
-          # `|| code=''` on the POST below is what makes that true. Without it
+          # `|| rc=$?` on the POST below is what makes that true. Without it
           # `code=$(curl ...)` is a failed assignment under `set -e`, so the
           # very first transport error ended the step and returned curl's own
           # code as the job's failure -- runs 251, 256, 259 and 260 all died
@@ -317,6 +355,13 @@ jobs:
           # retry loop was dead code for exactly the failure it was written
           # for. A 21 MB upload is also the request most likely to be hit by
           # it, so this is not a theoretical path.
+          #
+          # And it keeps losing, because `|| code=''` also threw away what curl
+          # knew: a -w that never got a response prints nothing, so the log
+          # said "attempt 1 for X: HTTP" with the code simply missing -- 000 is
+          # what happened -- while 56 (reset) or 28 (timeout) or 35 (TLS) is
+          # the only thing that says which one. Both are reported now; neither
+          # is allowed to decide the step's fate.
           upload_names=()
           while IFS= read -r f; do
             # Tauri names the deb after the product name, spaces and all. A name
@@ -328,34 +373,47 @@ jobs:
 
             code=''
             new_id=''
-            for attempt in 1 2 3; do
+            # 5 次而不是 3 次，并且把间隔拉开。这些失败全是传输层的、跟产物本身
+            # 无关（56 bad record mac / 524 / 28 烧完 300s），而 21 MB 的 POST
+            # 正是最容易被打中的那个请求；重试圈是唯一能把它们变成绿灯的东西。
+            # 每次失败都换一条 TLS 连接，间隔拉长也给负载均衡后的边缘节点一个
+            # 把下一次交到别的节点上的机会。代价是这条路径最多会跑十几分钟，
+            # 相对 240 分钟的整步上限可以接受。
+            delay=5
+            for attempt in 1 2 3 4 5; do
               # --connect-timeout: 卡在握手上时 30s 就换下一次，而不是像 run 256
               # 那样把 300s 的默认连接超时一次烧光。--max-time 才是整条上传的
               # 上限，21 MB 走得慢也留足 900s。
+              rc=0
               code=$(curl -4 -sS --connect-timeout 30 --max-time 900 \
                           -o "$RUNNER_TEMP/upload.json" -w '%{http_code}' \
                           -X POST "${auth[@]}" -F "attachment=@$f" \
-                          "$api/releases/$id/assets?name=$q") || code=''
+                          "$api/releases/$id/assets?name=$q") || rc=$?
+              code=${code:-000}
               if [ "$code" = 201 ]; then
-                new_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
-                              "$RUNNER_TEMP/upload.json")
+                # json_id, not a bare json.load: this is *after* the asset
+                # landed, so a 201 whose body will not parse must not take the
+                # step down. It comes back empty and the guard below says so.
+                new_id=$(json_id "$RUNNER_TEMP/upload.json") || new_id=''
                 break
               fi
-              echo "  attempt $attempt for $name: HTTP $code"
+              echo "  attempt $attempt for $name: HTTP $code (curl exit $rc)"
               cat "$RUNNER_TEMP/upload.json" >&2 || true
-              sleep 3
+              [ "$attempt" = 5 ] || { sleep "$delay"; delay=$((delay * 2)); }
             done
             if [ "$code" != 201 ]; then
-              echo "uploading $name failed after 3 attempts: HTTP $code" >&2
+              echo "uploading $name failed after 5 attempts: last HTTP $code (curl exit $rc)" >&2
               exit 1
             fi
             # The id of the copy just accepted drives the sweep below. A 201
-            # whose body did not name one would leave that sweep unable to tell
-            # the new asset from the old, so stop rather than guess -- a bad
-            # guess here deletes the very asset that was just uploaded.
+            # whose body did not name one leaves that sweep unable to tell the
+            # new asset from the old, and a wrong guess there deletes the very
+            # asset just uploaded -- so skip the sweep and let the read-back at
+            # the end of the step, which matches on name, be the judge. The
+            # asset is already on the release; there is nothing left to fail.
             [ -n "$new_id" ] || {
-              echo "upload of $name returned 201 without an asset id" >&2
-              exit 1
+              echo "  upload of $name returned 201 without an asset id; skipping the sweep for it" >&2
+              continue
             }
             echo "  uploaded $name (id $new_id, $(du -h "$f" | cut -f1))"
 
@@ -372,19 +430,23 @@ jobs:
             # killed the job *after* the 21 MB asset was already on the release.
             # An old copy lingering on the release is not worth a red build;
             # the next run of this version sweeps it.
+            #
+            # stale_ids only closes the remaining hole in that same statement:
+            # a 200 whose body is not the JSON array (an edge node's HTML error
+            # page, a truncated read) still reached json.load. It cannot raise
+            # now; it says what it got and hands back nothing to delete.
             list_code=$(api_get -o "$RUNNER_TEMP/assets.json" -w '%{http_code}' \
                                 "${auth[@]}" "$api/releases/$id/assets")
             stale=''
             if [ "$list_code" = 200 ]; then
-              stale=$(python3 -c 'import json,sys; print("\n".join(str(a["id"]) for a in json.load(open(sys.argv[1])) if a["name"]==sys.argv[3] and str(a["id"])!=sys.argv[2]))' \
-                            "$RUNNER_TEMP/assets.json" "$new_id" "$name")
+              stale=$(stale_ids "$RUNNER_TEMP/assets.json" "$new_id" "$name") || stale=''
             else
               echo "  listing assets for $name failed: HTTP $list_code; leaving older copies in place"
             fi
             for asset_id in $stale; do
               del=$(curl -4 -sS --connect-timeout 30 -o /dev/null -w '%{http_code}' -X DELETE \
                           "${auth[@]}" "$api/releases/$id/assets/$asset_id") || del=''
-              echo "  dropped superseded $name (id $asset_id, HTTP $del)"
+              echo "  dropped superseded $name (id $asset_id, HTTP ${del:-000})"
             done
           done < <(find "$src/src/tauri/target" -type f -path '*/bundle/*' \
                         \( -name '*.deb' -o -name '*.AppImage' \) | sort)
@@ -403,10 +465,19 @@ jobs:
             exit 1
           }
           for name in "${upload_names[@]}"; do
+            # Fatal either way, but a traceback for "the body was not JSON" is
+            # not an answer to "is the release installable from", so say which
+            # of the two it was.
             python3 - "$RUNNER_TEMP/final.json" "$name" <<'PY'
           import json, sys
-          names = {a["name"] for a in json.load(open(sys.argv[1]))}
-          sys.exit(0 if sys.argv[2] in names else 1)
+          try:
+              names = {a["name"] for a in json.load(open(sys.argv[1]))}
+          except Exception as exc:
+              print(f"could not read the release's assets back: {exc}", file=sys.stderr)
+              sys.exit(1)
+          if sys.argv[2] not in names:
+              print(f"{sys.argv[2]} is not on the release", file=sys.stderr)
+              sys.exit(1)
           PY
             echo "  verified $name is on the release"
           done
