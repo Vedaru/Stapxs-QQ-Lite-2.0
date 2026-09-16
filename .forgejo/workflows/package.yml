@@ -209,6 +209,29 @@ jobs:
           api="https://git.vedaru.cn/api/v1/repos/$repo"
           auth=(-H "Authorization: token $FORGEJO_TOKEN")
 
+          # curl 的退出码绝不能漏给 `set -e`。这脚本开着 `set -euo pipefail`，
+          # 而 `code=$(curl ...)` 这种赋值里 curl 一旦非零退出，就是「赋值语句
+          # 失败」，整步会当场按 curl 的码结束 —— 之前每一次失败都是这么死的：
+          # 35（TLS 连接被掐）/ 28（连接超时）/ 56（传输中途断），全是到
+          # git.vedaru.cn 的抖动，跟构建产物一点关系都没有。而下面上传那圈
+          # 「重试 3 次」一次都没执行过：脚本里那句 "failed after 3 attempts"
+          # 从没出现在日志里，web UI 上看到的就是裸的 curl 码。
+          # 把状态吃掉，让调用点按 $code 判断，重试才真的存在。
+          #
+          # --connect-timeout 30：curl 默认连接超时是 300s，一个卡住的边缘节点
+          # （run 256：`curl: (28) Connection timed out after 300504 milliseconds`）
+          # 一次就烧掉五分钟，烧完还是失败。30s 够一次正常握手，卡住就赶紧换下次。
+          #
+          # --retry 只给 GET。重投一个 multipart POST 有重复落库的语义问题，而
+          # 上传本来就在 shell 里有 3 次机会，并且明确接受同名资源重复、事后按 id
+          # 扫掉旧的 —— 那条路径一行不动。彻底连不上时 curl 仍然会吐出 000，
+          # 各调用点已经把它当「非预期结果」处理（`case` 落到 `*)`、`!= 201`），
+          # 不会静默当成成功。
+          api_get() {
+            curl -4 -sS --connect-timeout 30 --retry 3 --retry-all-errors \
+                 --retry-connrefused "$@" || true
+          }
+
           version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' \
                        "$src/package.json")
           tag="v$version"
@@ -217,7 +240,12 @@ jobs:
           # Find-or-create the release. A 404 is the only expected answer; any
           # other non-200 is a real failure and must be loud rather than
           # silently re-attributed to "missing".
-          http=$(curl -4 -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
+          #
+          # run 257 died right here: the lookup hit a TLS reset before the
+          # `case` could even run, and 35 became the whole step's exit code.
+          # api_get turns that into a `000` that falls through to the `*)`
+          # branch below, which says what actually happened.
+          http=$(api_get -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
                       "${auth[@]}" "$api/releases/tags/$tag")
           case "$http" in
             200) echo "release $tag already exists; replacing its assets" ;;
@@ -246,9 +274,14 @@ jobs:
               "prerelease": False,
           }, sys.stdout)
           PY
-              http=$(curl -4 -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
-                          -X POST "${auth[@]}" -H 'Content-Type: application/json' \
-                          --data-binary "@$RUNNER_TEMP/new-release.json" "$api/releases")
+              # 这个 POST 不吃 --retry（理由见 api_get 上面那段），但它的状态
+              # 同样不能漏给 set -e：`|| http=''` 让下面那条 != 201 去报错，
+              # 而不是让 curl 的码替脚本说话。建 release 本身是 find-or-create，
+              # 真失败了整步重跑一次也是干净的。
+              http=$(curl -4 -sS --connect-timeout 30 -o "$RUNNER_TEMP/release.json" \
+                          -w '%{http_code}' -X POST "${auth[@]}" \
+                          -H 'Content-Type: application/json' \
+                          --data-binary "@$RUNNER_TEMP/new-release.json" "$api/releases") || http=''
               if [ "$http" != 201 ]; then
                 echo "creating release $tag failed: HTTP $http" >&2
                 cat "$RUNNER_TEMP/release.json" >&2
@@ -275,6 +308,15 @@ jobs:
           # already had TLS reset mid-transfer once (curl 56, `unexpected eof
           # while reading`); that is a transient for the job to absorb rather
           # than the reason to report a failure.
+          #
+          # `|| code=''` on the POST below is what makes that true. Without it
+          # `code=$(curl ...)` is a failed assignment under `set -e`, so the
+          # very first transport error ended the step and returned curl's own
+          # code as the job's failure -- runs 251, 256, 259 and 260 all died
+          # here with 56 or 28, none of them ever printing "attempt 2". The
+          # retry loop was dead code for exactly the failure it was written
+          # for. A 21 MB upload is also the request most likely to be hit by
+          # it, so this is not a theoretical path.
           upload_names=()
           while IFS= read -r f; do
             # Tauri names the deb after the product name, spaces and all. A name
@@ -287,9 +329,13 @@ jobs:
             code=''
             new_id=''
             for attempt in 1 2 3; do
-              code=$(curl -4 -sS --max-time 900 -o "$RUNNER_TEMP/upload.json" -w '%{http_code}' \
+              # --connect-timeout: 卡在握手上时 30s 就换下一次，而不是像 run 256
+              # 那样把 300s 的默认连接超时一次烧光。--max-time 才是整条上传的
+              # 上限，21 MB 走得慢也留足 900s。
+              code=$(curl -4 -sS --connect-timeout 30 --max-time 900 \
+                          -o "$RUNNER_TEMP/upload.json" -w '%{http_code}' \
                           -X POST "${auth[@]}" -F "attachment=@$f" \
-                          "$api/releases/$id/assets?name=$q")
+                          "$api/releases/$id/assets?name=$q") || code=''
               if [ "$code" = 201 ]; then
                 new_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
                               "$RUNNER_TEMP/upload.json")
@@ -318,13 +364,26 @@ jobs:
             # version. Drop those by id -- excluding the one just written, so
             # this can never delete what it uploaded. Without this a re-push
             # of a version leaves every build of it on the release at once.
-            curl -4 -sS "${auth[@]}" "$api/releases/$id/assets" \
-                 -o "$RUNNER_TEMP/assets.json" || true
-            stale=$(python3 -c 'import json,sys; print("\n".join(str(a["id"]) for a in json.load(open(sys.argv[1])) if a["name"]==sys.argv[3] and str(a["id"])!=sys.argv[2]))' \
-                          "$RUNNER_TEMP/assets.json" "$new_id" "$name")
+            # The listing is best-effort, and it now says so out loud. It used
+            # to be `curl ... || true` piped straight into python3 -- a failed
+            # GET left assets.json empty, json.load raised, and the assignment
+            # `stale=$(python3 ...)` took the whole step down with it. Same bug
+            # as the upload loop, one statement later, and this one would have
+            # killed the job *after* the 21 MB asset was already on the release.
+            # An old copy lingering on the release is not worth a red build;
+            # the next run of this version sweeps it.
+            list_code=$(api_get -o "$RUNNER_TEMP/assets.json" -w '%{http_code}' \
+                                "${auth[@]}" "$api/releases/$id/assets")
+            stale=''
+            if [ "$list_code" = 200 ]; then
+              stale=$(python3 -c 'import json,sys; print("\n".join(str(a["id"]) for a in json.load(open(sys.argv[1])) if a["name"]==sys.argv[3] and str(a["id"])!=sys.argv[2]))' \
+                            "$RUNNER_TEMP/assets.json" "$new_id" "$name")
+            else
+              echo "  listing assets for $name failed: HTTP $list_code; leaving older copies in place"
+            fi
             for asset_id in $stale; do
-              del=$(curl -4 -sS -o /dev/null -w '%{http_code}' -X DELETE \
-                          "${auth[@]}" "$api/releases/$id/assets/$asset_id")
+              del=$(curl -4 -sS --connect-timeout 30 -o /dev/null -w '%{http_code}' -X DELETE \
+                          "${auth[@]}" "$api/releases/$id/assets/$asset_id") || del=''
               echo "  dropped superseded $name (id $asset_id, HTTP $del)"
             done
           done < <(find "$src/src/tauri/target" -type f -path '*/bundle/*' \
@@ -333,7 +392,16 @@ jobs:
           # Read the release back rather than trusting the upload responses: a
           # green job whose release is missing an asset is the one failure the
           # author would only find out about at install time.
-          curl -4 -fsS "${auth[@]}" "$api/releases/$id/assets" -o "$RUNNER_TEMP/final.json"
+          #
+          # Retried on the way in (api_get), but still fatal on failure: this
+          # read-back is the only thing between a green job and a release that
+          # nobody can install from.
+          final_code=$(api_get -o "$RUNNER_TEMP/final.json" -w '%{http_code}' \
+                               "${auth[@]}" "$api/releases/$id/assets")
+          [ "$final_code" = 200 ] || {
+            echo "reading the release's assets back failed: HTTP $final_code" >&2
+            exit 1
+          }
           for name in "${upload_names[@]}"; do
             python3 - "$RUNNER_TEMP/final.json" "$name" <<'PY'
           import json, sys
