@@ -405,6 +405,7 @@ import {
     getImageInfo,
     rememberImageSize,
     rememberImageTone,
+    readImageMimeFromBase64,
 } from '@renderer/function/utils/msgUtil'
 import {
     isRobot,
@@ -571,8 +572,14 @@ async function loadCachedImage(url: string) {
     const urlHash = await hashUrl(url)
     const cached = await dbGetImage(selfId, urlHash)
     if (cached) {
-        resolvedImages.value[url] =
-            `data:${cached.mimeType};base64,${cached.data}`
+        // 不能直接信库里存的类型：早期版本的本地反代把所有响应的 Content-Type 写死成
+        // text/html，那段时间缓存下来的图片就带着这个假类型躺在库里。而 data: URL 的内容
+        // 嗅探是被关掉的（声明什么就按什么解析），照搬这个头等于给每一张老缓存判死刑。
+        // 字节就在手上，按签名认一遍；认不出来才用存的值，且只接受 image/*。
+        const stored = typeof cached.mimeType === 'string' ? cached.mimeType : ''
+        const mimeType = readImageMimeFromBase64(cached.data)
+            ?? (stored.startsWith('image/') ? stored : 'image/jpeg')
+        resolvedImages.value[url] = `data:${mimeType};base64,${cached.data}`
         return resolvedImages.value[url]
     }
 

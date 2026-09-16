@@ -886,30 +886,24 @@ export function rememberImageTone(url: string, light: boolean) {
 const imagePreloads = new Map<string, Promise<void>>()
 
 /**
- * 离屏把一张远端图片加载一遍，只为在它渲染之前拿到原始宽高。
+ * 在图片渲染之前拿到它的原始宽高，写进 imageInfos。
  *
- * 为什么非要加载一遍：OneBot 的图片段只有 file / url / file_size，没有宽高（见上面
+ * 为什么非要拿到图片本身：OneBot 的图片段只有 file / url / file_size，没有宽高（见上面
  * imageInfos 的注释），所以尺寸只能从图片本身读出来。
  *
- * 为什么不 fetch 字节再读文件头（readImageSizeFromBase64 就能干这个）：那要求先把
- * 字节取到手，而取字节只能靠 fetch —— backend.proxy 只在 Tauri 上存在，web / electron
- * 上 backend.proxyUrl 就是原样返回 CDN 地址，跨域 fetch 拿不到 CORS 头会被浏览器直接
- * 拒掉，一个字节都读不到。而 <img> 加载不受这条限制，naturalWidth / naturalHeight 也
- * 不受 CORS 污染（只有 canvas 取像素才受限），所以这是唯一全平台通用的做法。
+ * 具体怎么读走 measureImageSize：有本地反代时只取开头一小段（HTTP Range）就够，拿不到
+ * 才退回把整张图加载一遍。后者是唯一全平台通用的做法 —— fetch 字节要求先拿到字节，而
+ * backend.proxy 只在 Tauri 上存在，web / electron 上 backend.proxyUrl 原样返回 CDN 地址，
+ * 跨域 fetch 拿不到 CORS 头会被浏览器直接拒掉，一个字节都读不到；<img> 加载不受这条限制，
+ * naturalWidth / naturalHeight 也不受 CORS 污染（只有 canvas 取像素才受限）。
  *
- * 这次加载也不白做：响应进了浏览器的 HTTP 缓存，真正那个 <img> 挂上去时不会二次下载。
- * 所以 src 必须和 MsgBody.getImgSrc 用的是同一个 URL（都是 backend.proxyUrl），换了
- * URL 就命中不了缓存，等于白加载一遍。
+ * 退回整张加载时那次加载也不白做：响应进了浏览器的 HTTP 缓存，真正那个 <img> 挂上去时
+ * 不会二次下载。所以 src 必须和 MsgBody.getImgSrc 用的是同一个 URL（都是 backend.proxyUrl），
+ * 换了 URL 就命中不了缓存，等于白加载一遍。
  *
- * 量到 onload 为止，**不**再顺带 await img.decode()。解不解码都不影响这个功能的正确性
- * （占位框的尺寸来自 naturalWidth / naturalHeight，onload 就有了），但 decode() 要把整张
- * 图解完才放行，而这一批消息是 Promise.all 一起等的，等于让整页去等最慢那张图的解码。
- * 真正那个 <img> 挂上时解码就发生在它自己的框里 —— 框早就是最终尺寸，解多久都不动布局。
- *
- * 只有 load / error 两个出口，两个都 resolve，绝不 reject —— 量不到就量不到，调用方
- * 照旧在没有占位框的情况下渲染，和改动前一样。onerror 覆盖 404 / 403 / DNS / 断网
- * 这些「确定拿不到」的情况。不设超时是明确的取舍：宁可多等，也不要在还能等到的时候
- * 提前把这一批消息放出去让它抖一下。
+ * 绝不 reject —— 量不到就量不到，调用方照旧在没有占位框的情况下渲染，和改动前一样。
+ * 404 / 403 / DNS / 断网都由 onerror 或 fetch 的失败分支覆盖。不设超时是明确的取舍：
+ * 宁可多等，也不要在还能等到的时候提前把这一批消息放出去让它抖一下。
  */
 export function preloadImageSize(url: string): Promise<void> {
     if (!url || !url.startsWith('http')) return Promise.resolve()
@@ -918,7 +912,79 @@ export function preloadImageSize(url: string): Promise<void> {
     const inflight = imagePreloads.get(url)
     if (inflight) return inflight
 
-    const task = new Promise<void>((resolve) => {
+    const task = measureImageSize(url)
+
+    // 落定后清键。这里可以无条件删：在这条 promise 落定之前，任何重入的调用都会在
+    // 上面撞到它并直接返回，所以此刻表里放着的必然还是它自己。
+    const tracked = task.then(() => {
+        imagePreloads.delete(url)
+    })
+    imagePreloads.set(url, tracked)
+    return task
+}
+
+/**
+ * 探尺寸时向上游要的字节数。
+ *
+ * 8KB 是量出来的，不是拍的：拿本地历史里 29 张真实 QQ 聊天图逐一试过，宽高最早 16 字节、
+ * 最晚 890 字节就能解出来（GIF / PNG 在文件头里，JPEG 要走到 SOF 段，那张 890 的是带
+ * 缩略图的 EXIF）—— 所以 8KB 对实测样本有 9 倍余量。
+ *
+ * 为什么不干脆多要一点：等待时间和「要多少字节」基本成正比。同一条连接上交替取同一张
+ * 763KB 的图，中位数 1KB 191ms / 8KB 292ms / 64KB 782ms，更大的 64KB 之前还量到过 6.9s。
+ * 这些字节只为读尺寸，一张都不进渲染（真正那张图由 <img> 自己下），能少要就少要。
+ *
+ * 万一遇到元数据更大的图（手机原图那种几十 KB 的 EXIF / ICC）这里就解不出来，退回整张
+ * 加载 —— 慢，但结果正确，和没有这条快路径时一样。
+ */
+const IMAGE_SIZE_PROBE_BYTES = 8 * 1024
+
+/**
+ * 只取图片开头的一小段（HTTP Range）来读宽高，不把整张图下完。
+ *
+ * 为什么值得单独走一条路：真正贵的是「渲染前必须知道尺寸」这件事本身。实测一张 QQ 表情
+ * 763KB、慢网上 14.5s，而宽高就在前 16 个字节里 —— 为了这十几个字节等 14.5s，整个会话就
+ * 会卡在那儿不出现。改成只取开头一小段（同一张 0.2-0.8s），会话立刻能出来，剩下的整张图
+ * 交给真正那个 <img> 在已经占好的框里慢慢流。
+ *
+ * 上游的 Range 是代理转发的（http_proxy.rs），所以这里只在有本地反代时走：web / electron
+ * 上 backend.proxy 是空的，fetch 会直连 CDN，跨域拿不到 CORS 头就一个字节都读不到 ——
+ * 那条路上还是只能靠 <img>（见 preloadImageSize 的说明）。
+ *
+ * 上游不支持 Range 就返回 200 带整张图，这里照样能从返回的字节里读出尺寸，不吃亏；认不出来
+ * （截断在 SOF 之前、或根本不是图片）返回 null，调用方退回整张加载。
+ */
+async function probeImageSize(url: string): Promise<{ w: number, h: number } | null> {
+    if (!backend.proxy) return null
+    try {
+        const resp = await fetch(backend.proxyUrl(url), {
+            headers: { Range: `bytes=0-${IMAGE_SIZE_PROBE_BYTES - 1}` },
+        })
+        if (!resp.ok) return null
+        return readImageSizeFromBytes(new Uint8Array(await resp.arrayBuffer()))
+    } catch {
+        return null
+    }
+}
+
+/**
+ * 量一张图的尺寸：先试只取开头一小段，探不到再退回把整张图加载一遍。
+ *
+ * 两条路都拿不到（404 / 断网 / 认不出的格式）就当没量到 —— 调用方照旧在没有占位框的
+ * 情况下渲染，和改动前一样。
+ */
+async function measureImageSize(url: string): Promise<void> {
+    const probed = await probeImageSize(url)
+    if (probed) {
+        rememberImageSize(url, probed.w, probed.h)
+        return
+    }
+
+    // 量到 onload 为止，**不**再顺带 await img.decode()：解不解码都不影响占位框的正确性
+    // （尺寸来自 naturalWidth / naturalHeight，onload 就有了），而 decode() 要把整张图解完
+    // 才放行，这一批消息是 Promise.all 一起等的，等于让整页去等最慢那张图的解码。真正那个
+    // <img> 挂上时解码就发生在它自己的框里 —— 框早就是最终尺寸，解多久都不动布局。
+    await new Promise<void>((resolve) => {
         const img = new Image()
         img.onload = () => {
             if (img.naturalWidth > 0 && img.naturalHeight > 0) {
@@ -929,14 +995,6 @@ export function preloadImageSize(url: string): Promise<void> {
         img.onerror = () => resolve()
         img.src = backend.proxyUrl(url)
     })
-
-    // 落定后清键。这里可以无条件删：在这条 promise 落定之前，任何重入的调用都会在
-    // 上面撞到它并直接返回，所以此刻表里放着的必然还是它自己。
-    const tracked = task.then(() => {
-        imagePreloads.delete(url)
-    })
-    imagePreloads.set(url, tracked)
-    return task
 }
 
 /** 单张图能占到的最大屏高：普通图被 MsgBody.imageWidthCss 折到 35vh，长图固定 40vh。 */
@@ -1244,6 +1302,18 @@ export function readImageSizeFromBase64(base64: string): { w: number, h: number 
     } catch {
         return null
     }
+    return readImageSizeFromBytes(bytes)
+}
+
+/**
+ * readImageSizeFromBase64 的字节版。
+ *
+ * 认不出来就返回 null —— 注意「认不出来」包含「这一小段里没有尺寸」：JPEG 的尺寸在 SOF 段里，
+ * 而 SOF 可能被 EXIF 挤到很后面（readJpegSize 的段链走不到头就返回 null，它只按手里的字节
+ * 走，不会越界读，所以截断只会让结果变 null、不会给出一个错尺寸）。调用方遇到 null 要退回
+ * 「把整张图拿全再量」，不能拿它当 0×0 记下来。
+ */
+export function readImageSizeFromBytes(bytes: Uint8Array): { w: number, h: number } | null {
     if (bytes.length < 16) return null
 
     const size =
@@ -1255,6 +1325,34 @@ export function readImageSizeFromBase64(base64: string): { w: number, h: number 
     if (!size || !Number.isFinite(size.w) || !Number.isFinite(size.h)) return null
     if (size.w <= 0 || size.h <= 0) return null
     return size
+}
+
+/**
+ * 从字节签名里读出真实的 MIME 类型（PNG / JPEG / GIF / WebP / BMP），认不出来返回 null。
+ *
+ * 为什么要从字节认、而不是信响应头：上游和代理都会说谎。而这个类型会被当成 data: URL 的
+ * 类型存进本地图片缓存 —— data: URL 不做内容嗅探，声明成什么就按什么解析，一旦存错，这张
+ * 图在缓存里就永久打不开了（不是「显示得奇怪」，是不显示），除非清缓存。字节本来就在手上，
+ * 看一眼签名就能把类型钉死，本地库里的真相不该由上游的一个头部决定。
+ */
+export function readImageMimeFromBytes(bytes: Uint8Array): string | null {
+    if (bytes.length < 12) return null
+    if (bytes[0] === 0x89 && tag(bytes, 1, 'PNG')) return 'image/png'
+    if (bytes[0] === 0xFF && bytes[1] === 0xD8) return 'image/jpeg'
+    if (tag(bytes, 0, 'GIF')) return 'image/gif'
+    if (tag(bytes, 0, 'RIFF') && tag(bytes, 8, 'WEBP')) return 'image/webp'
+    if (bytes[0] === 0x42 && bytes[1] === 0x4D) return 'image/bmp'
+    return null
+}
+
+/** readImageMimeFromBytes 的 base64 入口：只解前缀，不解整张图。 */
+export function readImageMimeFromBase64(base64: string): string | null {
+    if (!base64) return null
+    try {
+        return readImageMimeFromBytes(base64PrefixToBytes(base64, 64))
+    } catch {
+        return null
+    }
 }
 
 /** 解码 base64 开头的一小段（最多 byteLimit 字节）。data: 前缀会被剥掉。 */

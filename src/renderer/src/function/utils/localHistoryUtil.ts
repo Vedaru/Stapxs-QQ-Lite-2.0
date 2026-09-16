@@ -10,6 +10,7 @@ import {
     getMsgRawTxt,
     getImageInfo,
     readImageSizeFromBase64,
+    readImageMimeFromBytes,
     rememberImageSize,
     preloadImageSize,
     extractImageUrlsFromMsgs,
@@ -537,12 +538,20 @@ async function downloadImageViaProxy(url: string): Promise<{ mimeType: string; b
     const resp = await fetch(fetchUrl)
     if (!resp.ok) return null
 
-    const mimeType = resp.headers.get('Content-Type')?.split(';')[0]?.trim() ?? 'image/jpeg'
+    const headerType = resp.headers.get('Content-Type')?.split(';')[0]?.trim() ?? ''
     const buffer = await resp.arrayBuffer()
     const bytes = new Uint8Array(buffer)
     let binary = ''
     for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
     const base64 = btoa(binary)
+
+    // 字节是权威，头部只是转述。这个类型会跟着字节一起存进本地缓存，读的时候被拼成
+    // data: URL —— data: URL 不做内容嗅探，声明什么就按什么解析，存错就是永久打不开。
+    // 所以先按签名认；认不出来再听头部的（只接受 image/*，免得又把 text/html 这种
+    // 明显不是图片的类型存进去）；最后才退回 jpeg。
+    const mimeType =
+        readImageMimeFromBytes(bytes) ??
+        (headerType.startsWith('image/') ? headerType : 'image/jpeg')
     return { mimeType, base64 }
 }
 
