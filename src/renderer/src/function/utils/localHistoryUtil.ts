@@ -6,7 +6,16 @@
  */
 
 import { backend } from '@renderer/runtime/backend'
-import { getMsgRawTxt } from './msgUtil'
+import {
+    getMsgRawTxt,
+    getImageInfo,
+    readImageSizeFromBase64,
+    rememberImageSize,
+    preloadImageSize,
+    extractImageUrlsFromMsgs,
+    harvestImageSizesFromMsgs,
+    firstScreenMsgCount,
+} from './msgUtil'
 import { Logger } from '../base'
 import { useSettingsStore } from '@renderer/state/settings'
 import { useAuthStore } from '@renderer/state/auth'
@@ -48,6 +57,7 @@ async function callDbRecordList(
     command: string,
     payload: Record<string, any>,
     errorTag: string,
+    waitCountOf?: (msgs: any[]) => number,
 ): Promise<any[]> {
     if (!isTauriHistoryAvailable()) return []
     try {
@@ -57,10 +67,96 @@ async function callDbRecordList(
             true,
             { selfId: String(selfId), ...payload },
         )
-        return (records ?? []).map(deserializeRecord)
+        const msgs = (records ?? []).map(deserializeRecord)
+        // 在这一页交给 store 之前把图片尺寸补上 —— 它必须发生在这些行挂载之前，
+        // 见 prewarmImageSizes 的注释。只有「会落在视口里」的那一页需要等（dbGetLatest
+        // 传 firstScreenMsgCount），其余调用不传就是 0 = 后台量、不等。
+        await prewarmImageSizes(selfId, msgs, waitCountOf ? waitCountOf(msgs) : 0)
+        return msgs
     } catch (e) {
         logger.error(e as unknown as Error, errorTag)
         return []
+    }
+}
+
+/**
+ * 把这一页消息里还没量到尺寸的图片，从本地缓存里量出来。
+ *
+ * 这些行是从 DB 里翻出来的，消息段没有宽高、本地缓存里存的是字节，所以刚出生时
+ * MsgBody.preSize 一个占位盒都交不出来 —— 每张图都要等解码完才把那一行撑开，而这些
+ * 行往往正好落在视口里（上拉翻历史就是这么翻的），撑开量只能靠滚动去补，可是一次
+ * 滚动只能锚住撑开行的一侧，在视口里撑开的那种补不回来（实测：视口内的图解码时上面
+ * 整屏内容被推走 394px，怎么补都差一截）。
+ *
+ * 所以尺寸得赶在这些行挂载之前就进 imageInfos：这一步跑的时机正是「还没交给 store」，
+ * 量到之后 preSize 会给出正确的 aspect-ratio，出生框就是最终框，解码只是往占好的框里
+ * 填内容，列表高度自始至终不变。字节本来就在本地（图片缓存），读出来扫一眼文件头而已，
+ * 不解码、不联网；没缓存的图（远程地址、缓存被清过）量不到就照旧。
+ *
+ * 本地读不到的（图没进过缓存、缓存被清掉、缓存功能关着）接着交给网络预加载 —— 这条
+ * 兜底不能省：本地历史正是最容易出现「一大屏图同时在视口里解码」的场景，只靠本地
+ * 缓存量不到的那部分会原地退回抖动。
+ */
+async function prewarmImageSizes(
+    selfId: string | number,
+    msgs: any[],
+    waitCount = 0,
+): Promise<void> {
+    if (!isTauriHistoryAvailable()) return
+
+    // 段上自带宽高的先捡出来，这些图下去既不用读本地缓存也不用联网
+    harvestImageSizesFromMsgs(msgs)
+
+    const pending = [...new Set(extractImageUrlsFromMsgs(msgs))]
+        .filter(url => !getImageInfo(url))
+    if (pending.length === 0) return
+
+    // 开了手动加载就不替他下载，占位块才是他的入口；本地那点字节照读不误（不联网）
+    const settingsStore = useSettingsStore()
+    const allowNetwork = settingsStore.sysConfig.opt_no_auto_load_image !== true
+
+    // 本地读和网络预加载是**逐张**接力、而不是先等完整轮本地读再统一转网络。一轮
+    // dbGetImage 要把整张图的 base64 搬过 IPC，一页图读下来是实打实的一段等待；以前
+    // 网络那一半要等这段全部走完才开始，等于两段串着跑。现在每张图各自本地读不到就
+    // 立刻开下载，网络这段和其余图片的本地读重叠 —— 整页的等待从「本地轮 + 网络轮」
+    // 压成两者的较大值。
+    const measure = async (url: string) => {
+        try {
+            const cached = await dbGetImage(selfId, await hashUrl(url))
+            if (cached?.data) {
+                const size = readImageSizeFromBase64(cached.data)
+                if (size) {
+                    rememberImageSize(url, size.w, size.h)
+                    return
+                }
+            }
+        } catch {
+            // 读不到不影响其余图片，交给下面走网络
+        }
+        if (allowNetwork) await preloadImageSize(url)
+    }
+
+    // 整页都会量，但**默认一张都不等**：尺寸迟早会进 imageInfos，等的只是那些一挂上去
+    // 就落在视口里的行。理由和 msg.ts saveMsg 里那段一样 —— 列表是 column-reverse、原点
+    // 钉在最新一条上，视口**上方**长高推不动用户正在看的东西，只有视口里的会长给人看见。
+    // 所以「打开会话」这一页传 firstScreenMsgCount 等首屏，翻页 / 搜索这些整批落在视口
+    // 以外的调用传 0，后台走完即可，不占交给 store 之前的那段等待。
+    //
+    // 顺序要紧，和 msgUtil.preloadImageSizesForMsgs 是同一个理由：本地读是排队走的
+    // （一轮 dbGetImage 要把整张图的 base64 搬过 IPC），量不到的走网络预加载，而网络那边
+    // 也是同源排队。整页一起点着的话，首屏那几张恰好排在整页的最末尾 —— 前面几十张视口外
+    // 的图读完之前，它们连开始都开始不了，等待窗口明明只有两三张，等出来的却是整页的耗时。
+    // 所以先量完视口里那一撮，剩下的等它落定再开始。
+    const tail = new Set<string>()
+    if (waitCount > 0) {
+        for (const url of extractImageUrlsFromMsgs(msgs.slice(Math.max(0, msgs.length - waitCount)))) {
+            tail.add(url)
+        }
+    }
+
+    await Promise.all(pending.filter(url => tail.has(url)).map(url => measure(url)))
+    for (const url of pending) {
+        if (!tail.has(url)) void measure(url)
     }
 }
 
@@ -222,6 +318,9 @@ export async function saveMessagesWithSideEffects(selfId: string | number, msgs:
 /**
  * 获取某会话最新 n 条本地消息（正序，revoked 消息不包含）。
  *
+ * 这是唯一一个「拿到的这一页会出现在视口里」的读取（打开会话时垫在最新消息的位置），
+ * 所以也只有它需要等首屏图片量完尺寸，见 prewarmImageSizes。
+ *
  * @returns 消息段数组已反序列化的消息对象数组，出错或非 Tauri 返回空数组
  */
 export async function dbGetLatest(
@@ -229,13 +328,20 @@ export async function dbGetLatest(
     chatId: number,
     n: number,
 ): Promise<any[]> {
-    return callDbRecordList(selfId, 'db:getLatest', { chatId, n }, '[LocalHistory] dbGetLatest 失败')
+    return callDbRecordList(
+        selfId,
+        'db:getLatest',
+        { chatId, n },
+        '[LocalHistory] dbGetLatest 失败',
+        firstScreenMsgCount,
+    )
 }
 
 /**
  * 获取锚点消息之前（更旧）的 n 条，不含锚点本身，正序返回。
  *
- * 典型用途：上拉加载更多历史。
+ * 典型用途：上拉加载更多历史。这一页整个接在视口远端（更旧的那一头），长高推不动用户
+ * 正在看的东西，所以图片只后台量、不等（见 prewarmImageSizes 的默认值）。
  */
 export async function dbGetBefore(
     selfId: string | number,
@@ -286,6 +392,9 @@ export async function dbRevokeMessage(
 
 /**
  * 在指定会话的本地 DB 中按关键词搜索消息（对 raw_message 做 LIKE 匹配）。
+ *
+ * 结果进的是搜索面板的列表（Chat.vue 的 tags.search.list），不是消息列表，所以这里
+ * 不等图片尺寸 —— 等它只会让每敲一个字都卡在几张图的下载上。
  *
  * @returns 匹配消息列表（正序），出错或非 Tauri 返回空数组
  */
@@ -420,21 +529,10 @@ async function cacheImagesFromMsgs(selfId: string | number, msgs: any[]): Promis
     }
 }
 
-function extractImageUrlsFromMsgs(msgs: any[]): string[] {
-    const urls: string[] = []
-    for (const msg of msgs) {
-        if (!Array.isArray(msg.message)) continue
-        for (const seg of msg.message) {
-            if (seg.type === 'image' && seg.url && seg.url.startsWith('http')) {
-                urls.push(seg.url)
-            }
-        }
-    }
-    return urls
-}
-
 async function downloadImageViaProxy(url: string): Promise<{ mimeType: string; base64: string } | null> {
-    const fetchUrl = backend.proxy? `http://localhost:${backend.proxy}/proxy?url=${encodeURIComponent(url)}`: url
+    // 走 backend.proxyUrl 而不是就地拼一遍：代理地址只有一处定义（还带着 localhost /
+    // 127.0.0.1 这类必须和 Rust 那边的 bind 地址对齐的细节），拼两份迟早拼岔。
+    const fetchUrl = backend.proxyUrl(url)
 
     const resp = await fetch(fetchUrl)
     if (!resp.ok) return null
@@ -455,6 +553,12 @@ async function cacheSingleImage(selfId: string | number, url: string): Promise<v
 
     const downloaded = await downloadImageViaProxy(url)
     if (!downloaded) return
+
+    // 字节已经在手上，顺手量一次尺寸写进尺寸表：让「图进了本地缓存」和「客户端知道
+    // 它的比例」同时发生。这样以后翻到这一页时 preSize 直接给得出占位框，不必等到解码
+    // （prewarmImageSizes 是读路径的兜底，写入时就量掉就不用每次读都重解析一遍）。
+    const size = readImageSizeFromBase64(downloaded.base64)
+    if (size) rememberImageSize(url, size.w, size.h)
 
     await dbCacheImage(selfId, urlHash, downloaded.mimeType, downloaded.base64)
 }

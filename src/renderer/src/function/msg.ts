@@ -26,6 +26,8 @@ import {
     updateBaseOnMsgList,
     updateLastestHistory,
     sendMsgAppendInfo,
+    preloadImageSizesForMsgs,
+    firstScreenMsgCount,
 } from '@renderer/function/utils/msgUtil'
 import {
     delay,
@@ -646,6 +648,11 @@ export function requestReplyPreview(messageId: string) {
  * 往前翻的方向。目标与窗口之间那段没加载的消息会留个空档 —— 它本来就不可见
  * （列表不画空档），往上翻时 loadMoreHistory 会从新的 list[0] 接着往前拉。
  *
+ * 这里**不**等图片尺寸，保持同步：调用方（Chat.vue 的 jumpToReply）是在用户点了引用
+ * 之后立刻要跳过去的，为一张图把它挂住，碰上加载不出来的图就成了「点了没反应」——
+ * 比抖一下更糟。不等归不等，但要让它尽早开始：副本落地的那一刻就先量（见
+ * requestReplyPreview 的回包处理），用户点上来时尺寸通常已经在 imageInfos 里了。
+ *
  * @returns 是否真的插进去了（已经在列表里 → false）
  */
 export function promoteReplyTarget(message: any): boolean {
@@ -942,7 +949,7 @@ const msgFunctions = {
         if (!anchorMsgId || msg.data === null) return
         const rawList = getMsgData('message_list', msg, msgPath.message_list)
         getMessageList(rawList)
-            .then((list) => {
+            .then(async (list) => {
                 if (!list || list.length === 0) return
                 const inserted = insertHistorySegmentAtAnchor(
                     chatStore.messageList,
@@ -950,6 +957,10 @@ const msgFunctions = {
                     list,
                 )
                 if (inserted.length === chatStore.messageList.length) return
+                // 补出来的这一段是插进列表**中间**的，紧挨锚点的那一头就落在视口里 ——
+                // 和 saveMsg 同理，尺寸得赶在这些行挂载之前量好。等的是这一段自己的
+                // 首屏：firstScreenMsgCount 从段尾往回数，而段尾正是挨着锚点的那几行。
+                await preloadImageSizesForMsgs(list, firstScreenMsgCount(list))
                 replaceMessageListInPlace(inserted)
                 // 同步存入本地 DB，以便下次直接从本地加载
                 saveMessagesWithSideEffects(authStore.loginInfo.uin, list)
@@ -1089,6 +1100,12 @@ const msgFunctions = {
                     )
                     replyPreviewPending.delete(messageId)
                     chatStore.replyPreviewMap.set(messageId, target ?? null)
+                    // 顺手把尺寸量掉，只点着不等。这份副本正是「点引用要跳过去」的候选，
+                    // 而提升是同步的（promoteReplyTarget 直接往列表里插一行就走，见
+                    // Chat.vue 的 jumpToReply）—— 到那一刻才去量就晚了：行插进去、视口
+                    // 已经滚过去，图解码时那一行才长高，刚滚到的位置就错开了。在这里先
+                    // 量好，imageInfos 是全局的，提升那一刻 preSize 直接给得出正确的框。
+                    if (target) void preloadImageSizesForMsgs([target], 0)
                     settleJump(target)
                 })
                 .catch(giveUp)
@@ -1857,6 +1874,19 @@ async function saveMsg(msg: any, append = undefined as undefined | string) {
             uiStore.nowGetHistory = false
             return
         }
+
+        // 进列表之前先把这一批里所有还没量到尺寸的图片加载一遍。这是「零抖动」唯一的
+        // 落点：消息段的图片没有宽高，量不到尺寸的那一行出生就没有占位框，等解码完才
+        // 长高；而长在视口里的那一截没有任何补滚动的位置能救（滚动只能锚住撑开元素的
+        // 一侧）。所以 Timing 就是一切 —— 必须在这里等，不能等它挂上之后再补。
+        // 上面所有会丢弃消息的分支都已经走完了，这里等的正好是真正要显示的那一批。
+        //
+        // 等的只有首屏：列表是 column-reverse、原点钉在最新一条上，一行长高只会推走它的
+        // 远端内容 —— 长在视口上方的那一截推不动用户正在看的东西，只有视口里的会长给人
+        // 看见。所以往回数够一屏就够了（firstScreenMsgCount），剩下的图在后台自己加载完。
+        // 唯一例外是上拉接历史（append == 'top'）：这一批整个接在视口远端，等它没有意义。
+        const waitCount = append == 'top' ? 0 : firstScreenMsgCount(list)
+        await preloadImageSizesForMsgs(list, waitCount)
 
         // 保存到本地历史
         saveMessagesWithSideEffects(authStore.loginInfo.uin, list)

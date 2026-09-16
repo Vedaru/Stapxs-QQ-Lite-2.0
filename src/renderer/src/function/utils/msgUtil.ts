@@ -454,6 +454,13 @@ export function sendMsgRaw(
                 if (item.file.startsWith('base64://')) {
                     const b64Str = (item.file as string).substring(9)
                     item.url = 'data:image/png;base64,' + b64Str
+                    // 字节就在手上，顺手把原始宽高量出来记进尺寸表 —— 下面这条预显气泡
+                    // 拿 item.url 当键，量过之后它出生就带着确定的比例框（MsgBody 的
+                    // preSize），解码只是往占好的框里填内容。发的图往往正好出现在视口
+                    // 里，那一下撑开没有任何补滚动的位置能救，只能提前占住。
+                    // 认不出的格式返回 null，照旧等解码时量。
+                    const size = readImageSizeFromBase64(b64Str)
+                    if (size) rememberImageSize(item.url, size.w, size.h)
                 } else {
                     item.url = item.file
                 }
@@ -821,7 +828,8 @@ export function qqLevelToEmoji(level) {
  * 已量到的图片信息，按 URL 索引：原始尺寸（w / h）和长图角标的深浅（light）。
  *
  * 为什么需要它：消息里的 <img> 身上没有任何尺寸信息 —— OneBot 的图片段只有
- * file / url / file_size，没有宽高；本地图片缓存（src/tauri/src/commands/db.rs 的
+ * file / url / file_size，没有宽高（段上真带着就顺手捡了，见
+ * harvestImageSizesFromMsgs）；本地图片缓存（src/tauri/src/commands/db.rs 的
  * images 表）也只存字节。于是第一帧画出来的时候图片高度是 0，等解码完成才撑开，
  * 消息列表的总高度在画完之后还在长 —— 这是上拉翻历史时抖动的来源之一。
  *
@@ -834,7 +842,15 @@ export function qqLevelToEmoji(level) {
  * 也挂在它上面：class 交给模板算，才不会在下次重渲染时被 Vue 的 class 补丁抹掉
  * （以前是解码后 classList.add 上去的，模板一重渲染就没了）。
  */
-const imageInfos = ref<Record<string, { w: number, h: number, light?: boolean }>>({})
+interface ImageInfo {
+    /** 原始宽高（自然尺寸，不是渲染后的尺寸）。 */
+    w: number
+    h: number
+    /** 长图角标的深浅（.long-img.light）。取色是异步的，所以会比 w / h 晚到。 */
+    light?: boolean
+}
+
+const imageInfos = ref<Record<string, ImageInfo>>({})
 
 /** 取一张图片已量到的信息；还没量到就返回 undefined，由调用方决定要不要占位。 */
 export function getImageInfo(url: string) {
@@ -850,6 +866,7 @@ export function rememberImageSize(url: string, width: number, height: number) {
     if (width <= 0 || height <= 0) return
     if (imageInfos.value[url]) return
     imageInfos.value[url] = { w: width, h: height }
+    scheduleImageInfoSave()
 }
 
 /**
@@ -860,6 +877,555 @@ export function rememberImageTone(url: string, light: boolean) {
     const info = imageInfos.value[url]
     if (!info) return
     info.light = light
+    scheduleImageInfoSave()
+}
+
+// ── 渲染前预加载 ──────────────────────────────────────────────────
+
+/** 正在预加载的 URL → 它落定后的 Promise。同一张图被两批消息同时撞上时只加载一次。 */
+const imagePreloads = new Map<string, Promise<void>>()
+
+/**
+ * 离屏把一张远端图片加载一遍，只为在它渲染之前拿到原始宽高。
+ *
+ * 为什么非要加载一遍：OneBot 的图片段只有 file / url / file_size，没有宽高（见上面
+ * imageInfos 的注释），所以尺寸只能从图片本身读出来。
+ *
+ * 为什么不 fetch 字节再读文件头（readImageSizeFromBase64 就能干这个）：那要求先把
+ * 字节取到手，而取字节只能靠 fetch —— backend.proxy 只在 Tauri 上存在，web / electron
+ * 上 backend.proxyUrl 就是原样返回 CDN 地址，跨域 fetch 拿不到 CORS 头会被浏览器直接
+ * 拒掉，一个字节都读不到。而 <img> 加载不受这条限制，naturalWidth / naturalHeight 也
+ * 不受 CORS 污染（只有 canvas 取像素才受限），所以这是唯一全平台通用的做法。
+ *
+ * 这次加载也不白做：响应进了浏览器的 HTTP 缓存，真正那个 <img> 挂上去时不会二次下载。
+ * 所以 src 必须和 MsgBody.getImgSrc 用的是同一个 URL（都是 backend.proxyUrl），换了
+ * URL 就命中不了缓存，等于白加载一遍。
+ *
+ * 量到 onload 为止，**不**再顺带 await img.decode()。解不解码都不影响这个功能的正确性
+ * （占位框的尺寸来自 naturalWidth / naturalHeight，onload 就有了），但 decode() 要把整张
+ * 图解完才放行，而这一批消息是 Promise.all 一起等的，等于让整页去等最慢那张图的解码。
+ * 真正那个 <img> 挂上时解码就发生在它自己的框里 —— 框早就是最终尺寸，解多久都不动布局。
+ *
+ * 只有 load / error 两个出口，两个都 resolve，绝不 reject —— 量不到就量不到，调用方
+ * 照旧在没有占位框的情况下渲染，和改动前一样。onerror 覆盖 404 / 403 / DNS / 断网
+ * 这些「确定拿不到」的情况。不设超时是明确的取舍：宁可多等，也不要在还能等到的时候
+ * 提前把这一批消息放出去让它抖一下。
+ */
+export function preloadImageSize(url: string): Promise<void> {
+    if (!url || !url.startsWith('http')) return Promise.resolve()
+    if (getImageInfo(url)) return Promise.resolve()
+
+    const inflight = imagePreloads.get(url)
+    if (inflight) return inflight
+
+    const task = new Promise<void>((resolve) => {
+        const img = new Image()
+        img.onload = () => {
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+                rememberImageSize(url, img.naturalWidth, img.naturalHeight)
+            }
+            resolve()
+        }
+        img.onerror = () => resolve()
+        img.src = backend.proxyUrl(url)
+    })
+
+    // 落定后清键。这里可以无条件删：在这条 promise 落定之前，任何重入的调用都会在
+    // 上面撞到它并直接返回，所以此刻表里放着的必然还是它自己。
+    const tracked = task.then(() => {
+        imagePreloads.delete(url)
+    })
+    imagePreloads.set(url, tracked)
+    return task
+}
+
+/** 单张图能占到的最大屏高：普通图被 MsgBody.imageWidthCss 折到 35vh，长图固定 40vh。 */
+const MAX_IMAGE_SCREEN_RATIO = 0.4
+
+/** 一行纯文本消息的估算高度（像素）。只用来决定等待窗口，不参与布局。 */
+const TEXT_ROW_HEIGHT = 56
+
+/**
+ * 首屏等待窗口：从最新一条往回数到「够一屏」，返回需要等的条数。
+ *
+ * 为什么不必等整页（见 chatViewport 的注释）：列表是反转流，滚动原点钉在最新一条那一端，
+ * 内容是贴着原点往远端长的。一行长高只推开它**远端**那一侧的内容，所以用户在底部时
+ * （开房间、来新消息都是这个状态）视口**上方**那些行长高一个像素都推不动他看的东西。
+ * 真正会动的只有视口**里面**那几行 —— 要等的就只是首屏这一截。
+ *
+ * 权重：一条消息里只要还有没量到尺寸的图，就按它能长到的最大高度计入；其余按一行文本
+ * 计入。窗口因此会自己收敛 —— 图多的页面几步就凑满一屏（那正是等起来最贵的情况），图
+ * 已经量过的页面则一路数回去，而后者本来就不用等：量到过的图 preloadImageSize 直接返回，
+ * 把它们算进窗口不花钱。
+ *
+ * 为什么不用固定条数：一屏能放几条完全取决于那一页有多少图。图片行能占 40vh，一屏顶多
+ * 两三张；文本行几十像素，一屏十几条。固定条数在图多的页面上等太多，在图少的页面上又
+ * 等不够。
+ *
+ * 量不到视口时用窗口高度当近似。**不能退回整批**：这条路径是真实可走的 —— App.vue 里
+ * Chat 页面挂在 `chatStore.chatInfo.show.id != 0` 上，点开本次启动的第一个会话时，
+ * 「点会话」事件里跑到的这一趟（loadHistory → dbGetLatest）比 Chat 页面挂载还早，
+ * `#msgPan` 那时还不存在。退回整批就等于「为了开一个会话，把整页几十张图全下载完」，
+ * 而分页是 full 的时候这个「整批」还会随已加载条数一起涨 —— 这是打开会话最慢的一条路，
+ * 恰恰又落在冷启动那次最显眼的打开上。
+ *
+ * 窗口高度比聊天面板略大（面板还要扣掉顶栏和输入区），所以这是个**偏大**的近似：宁可
+ * 多等一两行，也不要少等 —— 少等就是那一行没量到尺寸、出生没有占位框，又抖回去。
+ */
+export function firstScreenMsgCount(msgs: any[]): number {
+    const pan = document.getElementById('msgPan')
+    let viewport = window.innerHeight
+    if (pan != undefined && pan.clientHeight > 0) viewport = pan.clientHeight
+
+    let covered = 0
+    let count = 0
+    for (let i = msgs.length - 1; i >= 0 && covered < viewport; i--) {
+        const pending = extractImageUrlsFromMsgs([msgs[i]])
+            .some(url => !getImageInfo(url))
+        covered += pending ? viewport * MAX_IMAGE_SCREEN_RATIO : TEXT_ROW_HEIGHT
+        count++
+    }
+    return count
+}
+
+/**
+ * 把一批消息里所有还没量到尺寸的远端图片先加载一遍。这一步必须跑在这些消息进列表
+ * 之前 —— 测量晚一步，那一行出生就没有占位框，解码时才长高，而长在视口里的那一段
+ * 没有任何补滚动的位置能救（见 MsgBody.preSize 的注释）。
+ *
+ * 整批图都会加载，但只**等**最新 waitCount 条消息里的那些（见 firstScreenMsgCount）。
+ * 剩下的不等：它们在视口上方，等它们只是白白把这一批的渲染往后拖。
+ *
+ * **顺序就是这里的全部**（曾经不是，代价是打开会话要等好几秒）：串行发起这一批里的
+ * 每一张图，浏览器按发起顺序排队，而所有预加载打进的是同一个源（Tauri 上都是本地反代
+ * http://127.0.0.1:PORT，HTTP/1.1 同源 6 条连接）。所以**先发起的先下载**。以前这里
+ * 是「整批一起点着、再等尾部的」——整批是按页序发起的，也就是从最旧那张开始，而视口里
+ * 要等的正好是最新那几张：它们排在队列最末尾，前面几十张视口外的图不下载完，它们连
+ * 请求都发不出去。等待窗口明明只有两三张图，等的时间却是「整页图片下载完」那么多。
+ *
+ * 现在分两拨：先发起并**等完**视口里那一撮（它们独占那 6 条连接），再发起其余的。
+ * 视口外的图晚一个往返开始，但它们在视口上方、本来就不急着要；而打开会话的体感
+ * 只由第一拨决定。
+ *
+ * waitCount 默认整批都等，也就是不传时的行为跟以前一致。
+ */
+export async function preloadImageSizesForMsgs(msgs: any[], waitCount = msgs.length): Promise<void> {
+    // 用户开了手动加载就不该替他下载任何东西，占位块才是他的入口
+    const settingsStore = useSettingsStore()
+    if (settingsStore.sysConfig.opt_no_auto_load_image === true) return
+
+    // 段上自带宽高的先捡出来，这些图下面就被过滤掉了，不用联网
+    harvestImageSizesFromMsgs(msgs)
+
+    const urls = [...new Set(extractImageUrlsFromMsgs(msgs))]
+        .filter(url => !getImageInfo(url))
+    if (urls.length === 0) return
+
+    // 视口里的那些：列表尾部的 waitCount 条消息带的图
+    const waiting = new Set(
+        extractImageUrlsFromMsgs(msgs.slice(Math.max(0, msgs.length - waitCount))),
+    )
+    const first = urls.filter(url => waiting.has(url))
+    const rest = urls.filter(url => !waiting.has(url))
+
+    // 第一拨：map 是同步跑完的，所以这一圈就把 img.src 按顺序全发出去，占住那 6 条连接。
+    // 不加显式并发限制：浏览器自己会排队，再叠一层只会多一份状态。
+    await Promise.all(first.map(url => preloadImageSize(url)))
+
+    // 第二拨：视口外的，等第一拨落定之后再开始点着，不占上面那段等待。
+    for (const url of rest) void preloadImageSize(url)
+}
+
+/**
+ * 遍历消息里所有可以预加载的远端图片段，逐个交给 visit。
+ *
+ * 转发消息的图片在 seg.content 里，要一起走：msgPreprocess 会在消息进列表之前就把
+ * content 填好（msg.ts 的 forward 分支），所以转发里的图也在同一个时机处理得到。
+ */
+function walkRemoteImageSegments(msgs: any[], visit: (seg: any) => void): void {
+    const walk = (segments: any) => {
+        if (!Array.isArray(segments)) return
+        for (const seg of segments) {
+            if (!seg) continue
+            if (seg.type === 'image' && typeof seg.url === 'string' && seg.url.startsWith('http')) {
+                visit(seg)
+            }
+            if (Array.isArray(seg.content)) {
+                for (const child of seg.content) walk(child?.message)
+            }
+        }
+    }
+    for (const msg of msgs) walk(msg?.message)
+}
+
+/**
+ * 收集消息里所有可以预加载的远端图片 URL。
+ */
+export function extractImageUrlsFromMsgs(msgs: any[]): string[] {
+    const urls: string[] = []
+    walkRemoteImageSegments(msgs, seg => urls.push(seg.url))
+    return urls
+}
+
+/**
+ * 从图片段自身带的宽高字段里捡尺寸，免得为一张已经写明尺寸的图再跑一趟网络。
+ *
+ * 目前没有任何已知的连接器会填这两个字段：OneBot 标准里图片段只有 file / url /
+ * file_size，NapCat / Lagrange 的适配层也没往外带。但底层是有这个数据的 ——
+ * NTQQ 自己发图时就带着宽高，Lagrange.Core 的 ImageEntity 有 ImageSize 字段
+ * （ImageSize = new Vector2(info.Width, info.Height)），是适配层在段边界上把它丢了。
+ * 所以这里是零成本快路径，不是当前必须走的路：真有连接器开始往外带（或者本项目的
+ * 后端以后开始透传），捡到就直接 rememberImageSize，下面那圈 !getImageInfo 的过滤
+ * 会跳过这些图，一整个网络的往返就省下来了。字段名取 width / height 和 w / h 两种 ——
+ * 两边都不成文，多认一种不花钱。
+ */
+export function harvestImageSizesFromMsgs(msgs: any[]): void {
+    walkRemoteImageSegments(msgs, seg => {
+        rememberImageSize(seg.url, Number(seg.width ?? seg.w), Number(seg.height ?? seg.h))
+    })
+}
+
+/**
+ * 尺寸表的落盘。存在独立的 localStorage 键里，**不**挂进设置项（optDefault）：
+ * Option.saveAll 每次保存都会把所有设置项重新序列化 + encodeURIComponent 写进
+ * localStorage['options']，桌面端还会用 store.store = arg 整个替换 electron-store /
+ * Tauri 存储（src/electron/function/ipc.ts）。几百条 URL 挂进去，等于用户每改一次设置
+ * 就重编码一遍整张表。独立键完全绕开那条路径，opt:saveAll 也碰不到它。
+ *
+ * 为什么必须落盘：这张表原先只在内存里，重启即失 —— 客户端明明已经量到过每一张图的
+ * 比例，却每次启动都从头再学一遍，于是每张图在每个会话里都要先撑开一次。这是「尺寸
+ * 信息在源头被丢掉」在本项目里最实的一处（协议不给宽高，客户端自己也不留）。
+ */
+const IMAGE_INFO_STORAGE_KEY = 'image_infos'
+const IMAGE_INFO_STORAGE_VERSION = 1
+/** 落盘条目上限，超出按插入顺序淘汰最旧的（JS 对象字符串键保持插入顺序）。 */
+const IMAGE_INFO_LIMIT = 2000
+/** 超过这个长度的键不落盘：那是内联的 data / base64 地址，又长又只在本会话有意义。 */
+const IMAGE_INFO_KEY_LIMIT = 2048
+/** 写入去抖：一屏图陆续解码完可能连着记十几条，没必要每条都序列化一次整张表。 */
+const IMAGE_INFO_WRITE_DELAY = 2000
+
+function getImageInfoStorage(): Storage | null {
+    try {
+        return typeof localStorage === 'undefined' ? null : localStorage
+    } catch {
+        // 某些环境下光是访问 localStorage 就会抛
+        return null
+    }
+}
+
+/** 这个键值不值得落盘。内联地址记在内存里就够了 —— 它换个会话就是另一个字符串。 */
+function isPersistableImageKey(url: string) {
+    return url.length <= IMAGE_INFO_KEY_LIMIT &&
+        !url.startsWith('data:') && !url.startsWith('base64://')
+}
+
+function buildImageInfoPayload(urls: string[]) {
+    const map: Record<string, number[]> = {}
+    for (const url of urls) {
+        const info = imageInfos.value[url]
+        if (!info) continue
+        map[url] = info.light ? [info.w, info.h, 1] : [info.w, info.h]
+    }
+    return JSON.stringify({ v: IMAGE_INFO_STORAGE_VERSION, m: map })
+}
+
+let imageInfoSaveTimer: ReturnType<typeof setTimeout> | undefined
+let imageInfoFlushHooked = false
+
+/** 退出前把待写的表刷掉，免得落在最后一个去抖窗口里的条目丢掉。 */
+function hookImageInfoFlush() {
+    if (imageInfoFlushHooked || typeof window === 'undefined') return
+    imageInfoFlushHooked = true
+    window.addEventListener('pagehide', flushImageInfoSave)
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushImageInfoSave()
+    })
+}
+
+function saveImageInfos() {
+    const storage = getImageInfoStorage()
+    if (!storage) return
+    const keys = Object.keys(imageInfos.value).filter(isPersistableImageKey)
+    if (keys.length === 0) return
+    const kept = keys.length > IMAGE_INFO_LIMIT ? keys.slice(-IMAGE_INFO_LIMIT) : keys
+    try {
+        storage.setItem(IMAGE_INFO_STORAGE_KEY, buildImageInfoPayload(kept))
+    } catch {
+        // 配额满了：砍掉一半再试一次。再失败就放弃 —— 尺寸只是占位优化的输入，
+        // 丢了顶多重新学一遍，不该因为存缓存失败而影响别的功能。
+        try {
+            storage.setItem(
+                IMAGE_INFO_STORAGE_KEY,
+                buildImageInfoPayload(kept.slice(Math.floor(kept.length / 2))),
+            )
+        } catch {
+            // 放弃这次落盘
+        }
+    }
+}
+
+function flushImageInfoSave() {
+    if (imageInfoSaveTimer === undefined) return
+    clearTimeout(imageInfoSaveTimer)
+    imageInfoSaveTimer = undefined
+    saveImageInfos()
+}
+
+function scheduleImageInfoSave() {
+    if (!getImageInfoStorage()) return
+    hookImageInfoFlush()
+    if (imageInfoSaveTimer !== undefined) clearTimeout(imageInfoSaveTimer)
+    imageInfoSaveTimer = setTimeout(() => {
+        imageInfoSaveTimer = undefined
+        saveImageInfos()
+    }, IMAGE_INFO_WRITE_DELAY)
+}
+
+/**
+ * 读回上一次会话量到的尺寸。
+ *
+ * 在模块加载时就读，而不是等某个组件的 onMounted：Vue 的子组件 mounted 早于父组件，
+ * 放在 App.vue 的 onMounted 里并不保证早于 Chat.vue 的第一帧，而这里必须早于第一张图
+ * 的渲染 —— 读晚一步，那一屏图就会照旧在没有比例的情况下出生，这次修改也就白做了。
+ */
+function hydrateImageSizes() {
+    const storage = getImageInfoStorage()
+    if (!storage) return
+    let raw: string | null = null
+    try {
+        raw = storage.getItem(IMAGE_INFO_STORAGE_KEY)
+    } catch {
+        return
+    }
+    if (!raw) return
+
+    const loaded: Record<string, ImageInfo> = {}
+    try {
+        const parsed = JSON.parse(raw)
+        if (!parsed || parsed.v !== IMAGE_INFO_STORAGE_VERSION) return
+        const map = parsed.m
+        if (!map || typeof map !== 'object') return
+        for (const url of Object.keys(map)) {
+            const entry = map[url]
+            if (!Array.isArray(entry)) continue
+            const [w, h, light] = entry
+            if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) continue
+            loaded[url] = light ? { w, h, light: true } : { w, h }
+        }
+    } catch {
+        // 表被改坏 / 解析失败：当空表重新学一遍，绝不能连累启动
+        return
+    }
+    // 本会话已经量到的优先，别让盘上的旧值盖掉刚量到的
+    imageInfos.value = { ...loaded, ...imageInfos.value }
+}
+
+hydrateImageSizes()
+
+/**
+ * 从图片字节的前缀里读出原始宽高（PNG / JPEG / GIF / WebP / BMP）。
+ *
+ * 为什么要有它：本地历史（src/tauri/src/commands/db.rs 的 images 表）里存的是字节，
+ * 消息段里又没有宽高，所以从 DB 翻出来的那一页消息在出生的时候一张图都不认识 ——
+ * preSize 交不出占位盒，每张图都得等解码完才撑开，而这一页往往正好在视口里（上拉
+ * 翻历史就是这么翻的），撑开量不可能靠滚动补回来。把字节开头解出来扫一眼文件头，
+ * 就能在这一页挂载之前把尺寸写进 imageInfos，让这些行出生就带着正确的 aspect-ratio
+ * （见 localHistoryUtil.prewarmImageSizes）。
+ *
+ * 只解码前缀（64KB，够过掉 EXIF 之类的元数据）、只读文件头，不做完整解码。认不出来
+ * 就返回 null，退回老行为：解码时撑开、由 imageLoaded 去补。
+ */
+export function readImageSizeFromBase64(base64: string): { w: number, h: number } | null {
+    if (!base64) return null
+    let bytes: Uint8Array
+    try {
+        bytes = base64PrefixToBytes(base64, 64 * 1024)
+    } catch {
+        return null
+    }
+    if (bytes.length < 16) return null
+
+    const size =
+        readPngSize(bytes) ??
+        readGifSize(bytes) ??
+        readBmpSize(bytes) ??
+        readWebpSize(bytes) ??
+        readJpegSize(bytes)
+    if (!size || !Number.isFinite(size.w) || !Number.isFinite(size.h)) return null
+    if (size.w <= 0 || size.h <= 0) return null
+    return size
+}
+
+/** 解码 base64 开头的一小段（最多 byteLimit 字节）。data: 前缀会被剥掉。 */
+function base64PrefixToBytes(base64: string, byteLimit: number): Uint8Array {
+    let body = base64
+    const comma = body.indexOf(',')
+    if (body.startsWith('data:') && comma >= 0) body = body.slice(comma + 1)
+
+    const charsNeeded = Math.ceil(byteLimit / 3) * 4
+    let chunk = body.length > charsNeeded ? body.slice(0, charsNeeded) : body
+    // atob 要求长度是 4 的倍数，且不接受换行
+    chunk = chunk.replace(/[\s]/g, '')
+    const rem = chunk.length % 4
+    if (rem !== 0) chunk = chunk.slice(0, chunk.length - rem)
+
+    const binary = atob(chunk)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return bytes
+}
+
+function u16be(b: Uint8Array, i: number) {
+    return (b[i] << 8) | b[i + 1]
+}
+function u16le(b: Uint8Array, i: number) {
+    return b[i] | (b[i + 1] << 8)
+}
+function u32be(b: Uint8Array, i: number) {
+    return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0
+}
+function u32le(b: Uint8Array, i: number) {
+    return (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0
+}
+function u24le(b: Uint8Array, i: number) {
+    return b[i] | (b[i + 1] << 8) | (b[i + 2] << 16)
+}
+function tag(b: Uint8Array, i: number, text: string) {
+    for (let k = 0; k < text.length; k++) {
+        if (b[i + k] !== text.charCodeAt(k)) return false
+    }
+    return true
+}
+
+/** PNG：IHDR 里的宽度 / 高度都是大端 32 位。 */
+function readPngSize(b: Uint8Array) {
+    if (b.length < 24) return null
+    if (b[0] !== 0x89 || !tag(b, 1, 'PNG')) return null
+    if (!tag(b, 12, 'IHDR')) return null
+    return { w: u32be(b, 16), h: u32be(b, 20) }
+}
+
+/** GIF：宽高是小端 16 位，紧跟在 6 字节的签名版本之后。 */
+function readGifSize(b: Uint8Array) {
+    if (b.length < 10 || !tag(b, 0, 'GIF')) return null
+    return { w: u16le(b, 6), h: u16le(b, 8) }
+}
+
+/** BMP：宽高是小端 32 位（高度为负表示自上而下，取绝对值）。 */
+function readBmpSize(b: Uint8Array) {
+    if (b.length < 26) return null
+    if (b[0] !== 0x42 || b[1] !== 0x4D) return null
+
+    // 头长度决定宽高字段的宽度：OS/2 的 BITMAPCOREHEADER 是 12 字节、宽高各 16 位，
+    // 其余（BITMAPINFOHEADER 40 / V4 108 / V5 124 / OS/2 2.x 的 64）宽高都在 18、22
+    // 这两个位置、各 32 位。按 32 位去读 12 字节的头会读出一对垃圾数字（实测：300x200
+    // 读成 13107500x1572865），而垃圾尺寸会被当成真尺寸记住、还会被钉进 aspect-ratio，
+    // 比不认它更糟 —— 头长度小到连这两个位置都对不上的，就别给。
+    const headerSize = u32le(b, 14)
+    if (headerSize === 12) return { w: u16le(b, 18), h: u16le(b, 20) }
+    if (headerSize < 16) return null
+
+    const w = u32le(b, 18)
+    const h = u32le(b, 22)
+    return { w, h: h > 0x7FFFFFFF ? 0x100000000 - h : h }
+}
+
+/** WebP：RIFF 容器，三种子格式的尺寸字段位置各不相同。 */
+function readWebpSize(b: Uint8Array) {
+    if (b.length < 32) return null
+    if (!tag(b, 0, 'RIFF') || !tag(b, 8, 'WEBP')) return null
+
+    if (tag(b, 12, 'VP8 ')) {
+        // 有损：关键帧起始码 9D 01 2A 之后的 14 位宽 + 14 位高
+        if (b[23] !== 0x9D || b[24] !== 0x01 || b[25] !== 0x2A) return null
+        return { w: u16le(b, 26) & 0x3FFF, h: u16le(b, 28) & 0x3FFF }
+    }
+    if (tag(b, 12, 'VP8L')) {
+        // 无损：签名 0x2F 之后 32 位里塞了 14 位宽 + 14 位高（都存的是减一）
+        if (b[20] !== 0x2F) return null
+        const bits = u32le(b, 21)
+        return { w: (bits & 0x3FFF) + 1, h: ((bits >> 14) & 0x3FFF) + 1 }
+    }
+    if (tag(b, 12, 'VP8X')) {
+        // 扩展：24 位宽 + 24 位高（减一）
+        return { w: u24le(b, 24) + 1, h: u24le(b, 27) + 1 }
+    }
+    return null
+}
+
+/**
+ * JPEG 的 EXIF 里读方向标记（Orientation，IFD0 的 tag 0x0112）。
+ *
+ * 为什么需要：浏览器渲染 JPEG 时默认按这个标记把图转正（image-orientation: from-image），
+ * 所以「原始字节 400x600 + Orientation 6」在引擎里量出来的自然尺寸是 600x400（实测
+ * WebKitGTK 4.1 的 naturalWidth/naturalHeight 就是转正后的）。照原始字节读出来的是没转正的
+ * 宽高，拿它占位等于把横图塞进竖框 —— 图片会被压扁，而且这个错尺寸会被钉进 aspect-ratio
+ * 一路错下去。手机拍的照片几乎都带这个标记，所以不能不管。
+ */
+function readExifOrientation(b: Uint8Array, start: number, size: number): number | null {
+    if (size < 14) return null
+    const end = Math.min(b.length, start + size)
+    let p = start
+    if (!tag(b, p, 'Exif') || b[p + 4] !== 0 || b[p + 5] !== 0) return null
+    p += 6
+
+    let le: boolean
+    if (b[p] === 0x49 && b[p + 1] === 0x49) le = true       // 'II'
+    else if (b[p] === 0x4D && b[p + 1] === 0x4D) le = false // 'MM'
+    else return null
+
+    const rd16 = (i: number) => (le ? u16le(b, i) : u16be(b, i))
+    const rd32 = (i: number) => (le ? u32le(b, i) : u32be(b, i))
+
+    if (rd16(p + 2) !== 42) return null
+    const ifd0 = p + rd32(p + 4)
+    if (ifd0 + 2 > end) return null
+
+    const count = rd16(ifd0)
+    for (let k = 0; k < count; k++) {
+        const entry = ifd0 + 2 + k * 12
+        if (entry + 12 > end) return null
+        if (rd16(entry) === 0x0112) {
+            const value = rd16(entry + 8)
+            return value >= 1 && value <= 8 ? value : null
+        }
+    }
+    return null
+}
+
+/** JPEG：要顺着段链找 SOF，所以放在最后 —— 前面几个看一眼签名就否掉了。 */
+function readJpegSize(b: Uint8Array) {
+    if (b.length < 4 || b[0] !== 0xFF || b[1] !== 0xD8) return null
+
+    let i = 2
+    let orientation = 0
+    while (i + 9 < b.length) {
+        if (b[i] !== 0xFF) { i++; continue }
+        const marker = b[i + 1]
+        if (marker === 0xFF) { i++; continue }        // 填充字节
+        if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) {
+            i += 2                                     // 无长度字段的独立标记
+            continue
+        }
+        const len = u16be(b, i + 2)
+        if (len < 2) return null
+        const isSof =
+            marker >= 0xC0 && marker <= 0xCF &&
+            marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC
+        if (isSof) {
+            const w = u16be(b, i + 7)
+            const h = u16be(b, i + 5)
+            // Orientation 5~8 是转过 90° 的，引擎会把它俩对调着渲染
+            return orientation >= 5 ? { w: h, h: w } : { w, h }
+        }
+        if (marker === 0xE1 && orientation === 0) {
+            const o = readExifOrientation(b, i + 4, len - 2)
+            if (o) orientation = o
+        }
+        i += 2 + len
+    }
+    return null
 }
 
 /**

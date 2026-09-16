@@ -473,7 +473,6 @@ const { viewer: viewerRef } = inject<{ viewer: any }>('viewer', { viewer: null }
 
 const emit = defineEmits<{
     jumpReply: [message_id: string]
-    imageLoaded: [...args: any[]]
     sendPoke: [...args: any[]]
     leftMove: [msg: Msg]
     rightMove: [msg: Msg]
@@ -669,14 +668,21 @@ function imgStyle(length: number, at: number, isFace: boolean) {
 }
 
 /**
- * 图片按 max-height: 35vh 缩放之后该有的宽度，也就是 --width 的取值。
+ * 图片按 max-height: 35vh 缩放之后该有的宽度，写成 CSS 表达式（--width 的取值）。
  * imageLoaded 量完自然尺寸要用一次，模板里提前占位也要用一次 —— 这个算法只留一份，
  * 免得两处各算各的、日后改了一处漏了另一处。
+ *
+ * 为什么交给 CSS 算、而不是在这里乘出个 px：35vh 跟着窗口高度变，而这个函数只在
+ * imageInfos 变化时才会被重新调用一次 —— 窗口 resize 既不触发模板重渲染（MsgBody
+ * 不消费 useViewportUnits 那对响应式 vw/vh），也没有任何 ResizeObserver 挂在图片上。
+ * 快照成 px 的后果实测（WebKitGTK 4.1，真实 msg.css）：400x600 的图在 900px 高的
+ * 窗口里占 210x315，把窗口缩到 450 高，宽度还是 210、max-height 却降成 157，
+ * 图被纵向压扁一半 —— 而且是每个占好位的图都扁，缩多少扁多少。
+ * 写成 min() / calc() 之后，宽度每次布局都由引擎按当前 vh 重算，两者永远同步；
+ * 窄图（天然高度没到 35vh）min() 取的是天然宽度，和原来逐个像素一致。
  */
-function scaledImageWidth(naturalWidth: number, naturalHeight: number) {
-    const vh = document.documentElement.clientHeight || document.body.clientHeight
-    if (naturalHeight <= vh * 0.35) return naturalWidth
-    return (naturalWidth * (vh * 0.35)) / naturalHeight
+function imageWidthCss(naturalWidth: number, naturalHeight: number) {
+    return `min(${naturalWidth}px, calc(35vh * ${naturalWidth / naturalHeight}))`
 }
 
 /** 长图（宽高比 > 2.5）的判据。宽高比在解码前就知道，所以这个判断能提前做。 */
@@ -698,24 +704,50 @@ function preImgClass(url: string) {
 }
 
 /**
- * 已经量到尺寸的图片，解码之前就把占位所需的属性交出去。
+ * 已经量到尺寸的图片，解码之前就把占位盒交出去。没量到就什么都不给（那一行解码时会
+ * 撑开，视口要不要跟着走由 chatViewport 按「视口底边那点内容有没有动」判断）。
  *
- * width / height 属性让浏览器提前按正确比例占住框（比例来自属性，尺寸再受
- * max-width / max-height 约束），解码完成也不再改变布局 —— 这就是「先用盒子把位置
- * 占住」，只不过盒子的比例是真的量出来的、不是猜的。没量到就一个属性都不给。
+ * width / height 属性管的是「原始尺寸」，`--width` 管表情图的 max-width
+ * （calc(var(--width) / 2 + 20px)，以前要等解码后由 imageLoaded 写入，在那之前它是
+ * 无效值、max-width 退回 none，解码完再缩一次）。
  *
- * --width 同理：表情图（mface / marketface）的 max-width 是
- * calc(var(--width) / 2 + 20px)，而 --width 以前要等解码后由 imageLoaded 写入，
- * 在那之前它是无效值、max-width 退回 none，解码完再缩一次 —— 提前给出就省掉这一缩。
+ * 但只给这两个属性**占不住高度**：`.msg-img` 上有一条 `height: auto`（msg.css，用来
+ * 盖掉 width/height 属性自带的那条 height: 200px 表现性提示，不然图会被纵向拉变形），
+ * 于是高度只能由「内在比例」推 —— 而字节还没到的 <img> 没有内在比例，WebKit 会退回
+ * 一个和真实比例无关的高度。实测（WebKitGTK 4.1，真实 msg.css，400x600 的图）：
+ * 只绑属性时出生框 281x191，解码后 281x422，这一行在解码时凭空长高 231px。这 231px
+ * 就长在视口里：滚动锚定只能补「视口底边之下」的高度，视口内部长高就是用户看的那些
+ * 内容自己被挤开 —— 没有任何补滚动的位置能救（这也正是它必须被提前占住的原因）。
+ *
+ * 所以比例必须显式写在盒子上：aspect-ratio 让第一帧就有确定的比例可算，出生框和
+ * 解码后的框逐像素相等（同一场景实测两次都是 281x422，撑开量 0 —— 解码只是往已经
+ * 占好的框里填内容，列表高度自始至终一个像素不变）。这才是「先把盒子占住」；只给
+ * 宽高属性、让高度等解码，那是「先给个大概、解码后再挪」，挪的正是视口里的内容。
+ *
+ * 但只有 aspect-ratio 也还不够：只要宽度是被指定死的（width 属性本身就是一条写死的
+ * width: 400px），max-height: 35vh 那次高度收窄就**不会**反推回宽度 —— WebKit 把高度
+ * 压到 315px 之后，宽度仍是按原始尺寸折算出来的 281px，比例从 0.667 变成 0.893，
+ * 图被横向拉宽 34%（实测 WebKitGTK 4.1：400x600 渲染成 281.4x315）。所以宽度要先自己
+ * 按 35vh 折好再写上去（就是 imageWidthCss 那个表达式），让高度顺着比例推出来正好也是
+ * 315px —— 两端都落在最终框里，谁也不去压谁，图才是原始比例、也是它该有的大小。
+ * 反过来的 max-width（宽图那条）不用管：它压的是宽度、高度是 auto 会跟着重算，比例不丢。
  */
 function preSize(url: string) {
     const info = getImageInfo(url)
     if (!info) return undefined
-    const width = isLongImage(url) ? info.w : scaledImageWidth(info.w, info.h)
+    const long = isLongImage(url)
+    // 长图那套固定框（20vw x 40vh）本来就是相对单位，宽度只有 --width 这一个用途。
+    const width = long ? `${info.w}px` : imageWidthCss(info.w, info.h)
     return {
         width: info.w,
         height: info.h,
-        style: { '--width': `${width}px` },
+        style: {
+            '--width': width,
+            'aspect-ratio': `${info.w} / ${info.h}`,
+            // 长图另有自己那套固定框（.long-img：20vw x 40vh + object-fit: cover），
+            // 内联宽度会盖掉 .long-img 的 20vw，所以这里不给。
+            ...(long ? {} : { width }),
+        },
     }
 }
 
@@ -763,39 +795,27 @@ async function imageLoaded(event: Event) {
     if (imgUrl) rememberImageSize(imgUrl, img.naturalWidth, img.naturalHeight)
 
     const imgHeight = img.naturalHeight || img.height
-    let imgWidth = img.naturalWidth || img.width
+    const imgWidth = img.naturalWidth || img.width
 
-    if (imgHeight / imgWidth > 2.5) {
+    // 缩放算法在 imageWidthCss 里，模板提前占位用的是同一份
+    const isLongImg = imgHeight / imgWidth > 2.5
+    if (!isLongImg && imgWidth > 0 && imgHeight > 0)
+        img.style.setProperty('--width', imageWidthCss(imgWidth, imgHeight))
+
+    // 这一行会不会因为解码长高、长高之后视口该不该跟着走，都不在这里判断 —— 聊天面板
+    // 的滚动位置只有 chatViewport 一份实现：它挂着 ResizeObserver 看列表容器的高度，
+    // 按「视口底边那点内容有没有动」决定补多少。这里只负责把量到的尺寸交出去，让下一
+    // 次渲染能提前占住框。
+
+    // 取色是异步的、必然晚于尺寸到，放在最后：它只写 .long-img.light 的角标颜色，
+    // 不动布局，晚一点没有关系。
+    if (isLongImg) {
         try {
             const picLight = ( await getForegroundToneGridFromImageUrl(backend.proxyUrl(img.src), 0.4))[1][1] === 'light'
             if(picLight && imgUrl) rememberImageTone(imgUrl, true)
         } catch {
             // do nothing
         }
-    } else {
-        // 缩放算法在 scaledImageWidth 里，模板提前占位用的是同一份
-        imgWidth = scaledImageWidth(imgWidth, imgHeight)
-    }
-
-    img.style.setProperty('--width', `${imgWidth}px`)
-    // 父级要的是「这次解码把内容撑开了多少」，不是「这张图有多高」—— 两者只有在
-    // 框还没占位时才相等。preSize 给缓存命中的图绑过 width / height 属性（Vue 对
-    // img 的这两个键特意走 attribute 而不是 property，见 runtime-dom 的
-    // shouldSetAsProp），它的框在解码前就已经是最终高度，解码撑开量是 0；不绑属性的
-    // 图才是真的从 0 长出来的，撑开量就是它自己的高度。
-    //
-    // 原先一律补整个高度，于是每张缓存命中的图都会把列表反向推一次 —— 缓存越全、
-    // 图越多，抖得越厉害，正好把 preSize 提前占位的收益全部抵消掉。src 从代理地址
-    // 换成解析后地址时会再触发一次 load，那次的框也已经定了（换 src 要经过一次
-    // 渲染，而渲染时 preSize 已经在按缓存绑属性了），同样不该补。
-    const reservedBox =
-        img.hasAttribute('width') && img.hasAttribute('height')
-    // 除了撑开的高度，还要把底边位置（视口坐标）一起给出去：聊天面板是反转流向
-    // （column-reverse），视口钉在离底部 gap 上，所以父级评判的锚点是面板底边 ——
-    // 得知道这张图的底边有没有落到面板底边之下，才知道该不该补滚动。此处读底边
-    // 是同步的，和父级接着读面板底边之间不可能插进一次滚动。
-    if (!reservedBox) {
-        emit('imageLoaded', img.offsetHeight, img.getBoundingClientRect().bottom)
     }
 }
 

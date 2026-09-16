@@ -6,8 +6,8 @@ use reqwest::Client;
 use warp::reply::Reply;
 use warp::Filter;
 
-const START_PORT: u16 = 5001;
-const MAX_PORT: u16 = 5100;
+const START_PORT: u16 = 8080;
+const MAX_PORT: u16 = 8180;
 
 pub struct ProxyServer {
     pub port: u16
@@ -32,6 +32,10 @@ impl ProxyServer {
                         if let Some(target_url) = params.get("url") {
                             match client.get(target_url).send().await {
                                 Ok(response) => {
+                                    // 协商头要在读 body 之前抄下来：response.bytes() 会把
+                                    // response 整个消耗掉，之后就拿不到 headers 了
+                                    let upstream_headers = response.headers().clone();
+
                                     let mut res = warp::http::Response::builder()
                                         .status(warp::http::StatusCode::from_u16(response.status().as_u16()).unwrap());
 
@@ -41,6 +45,22 @@ impl ProxyServer {
                                         .header("Access-Control-Allow-Origin", "*")
                                         .header("X-Frame-Options", "")
                                         .header("Content-Type", "text/html; charset=utf-8");
+
+                                    // 把上游的缓存协商头透传下去。以前这里是空的，浏览器
+                                    // 手上既没有 Cache-Control 也没有 ETag / Last-Modified，
+                                    // 就没有任何东西可以拿来复用这个响应，只能把每一个 <img>
+                                    // 都当成新请求，重新走一遍 代理 -> CDN 的完整往返。而聊天
+                                    // 图片恰恰是同一张 URL 反复出现（预加载之后真正的 <img>、
+                                    // 来回切会话、重开应用），每一次都从头下一遍。
+                                    //
+                                    // 走 as_bytes 而不是直接传 HeaderValue：reqwest 依赖 http
+                                    // 1.x、warp 依赖 http 0.2，两边的 HeaderValue 是不同的类型，
+                                    // 中间只能靠字节裸转。
+                                    for name in ["Cache-Control", "ETag", "Last-Modified", "Expires", "Age"] {
+                                        if let Some(value) = upstream_headers.get(name) {
+                                            res = res.header(name, value.as_bytes().to_vec());
+                                        }
+                                    }
 
                                     Ok::<_, Infallible>(res.body(body).into_response())
                                 }

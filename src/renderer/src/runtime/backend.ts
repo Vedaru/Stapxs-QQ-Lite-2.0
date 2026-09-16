@@ -12,6 +12,24 @@ const popInfo = new PopInfo()
 
 type CapacitorPluginRegistry = Record<string, Record<string, (...args: any[]) => any>>
 
+/**
+ * 本地反代服务的地址。
+ *
+ * 用 IPv4 字面量而不是 localhost，是为了和 Rust 那边的 bind 地址字面一致
+ * （src/tauri/src/commands/utils/http_proxy.rs 的 ([127, 0, 0, 1], port)）：字面量
+ * 不经过系统解析，直接命中已经在监听的那个 socket；localhost 要先解析，在解析结果里
+ * ::1 排在前面的机器（Windows 的 hosts 默认如此）上，每个请求都得先吃一次连接被拒再
+ * 回退 IPv4 —— 而图片是一张一个请求，这个代价按张数乘起来。
+ *
+ * 说明白一点：这条**不是**已量到的性能修复。在 Linux 上实测过，localhost 只解析到
+ * 127.0.0.1，两者的连接耗时都在噪声范围内。这么写只是为了让两边字面一致、并避开那条
+ * 平台相关的回退路径。
+ *
+ * 两边共用这一个常量：以前 proxyUrl 和 unProxyUrl 各写各的字面量，proxyUrl 一从
+ * localhost 换成 127.0.0.1，unProxyUrl 就再也匹配不上自己拼出来的东西了。
+ */
+const PROXY_ORIGIN = 'http://127.0.0.1'
+
 export const backend = {
     type: 'web' as 'electron' | 'tauri' | 'capacitor' | 'web',
     platform: undefined as 'win32' | 'darwin' | 'linux' | 'android' | 'ios' | 'web' | undefined,
@@ -46,7 +64,7 @@ export const backend = {
      */
     proxyUrl(url: string) {
         if (this.proxy && url && url.startsWith('http')) {
-            return `http://localhost:${this.proxy}/proxy?url=${encodeURIComponent(url)}`
+            return `${PROXY_ORIGIN}:${this.proxy}/proxy?url=${encodeURIComponent(url)}`
         } else {
             return url
         }
@@ -70,18 +88,31 @@ export const backend = {
     },
 
     /**
-     * 反代理 URL 转换
-     * @param url 需要转换的 URL
-     * @returns 转换后的 URL
+     * 反代理 URL 转换。proxyUrl 的逆运算：
+     * `unProxyUrl(proxyUrl(u)) === u`，对这个模块自己拼出来的东西成立。
+     *
+     * 只解码一次。proxyUrl 用 encodeURIComponent 编了一层，而 searchParams.get 本来就会
+     * 解开这一层 —— 以前这里又套了一次 decodeURIComponent，等于解两层：url 里本来就有
+     * 转义（`%20` 是空格、`%2F` 是斜杠）时会被解成第二遍，`.../a%20b/c%2Fd.png` 变成
+     * `.../a b/c/d.png`，拿到了一个和当初传进来不一样的地址。全仓库只有 proxyUrl 这一处
+     * 会拼反代地址（本文件 :67），所以这里的输入必然是单层编码的，单解正确。
+     *
+     * new URL 要 try 住：`http://127.0.0.1:99999/...` 这种端口越界的字面量会直接抛。
+     * 它虽然不是这个模块拼出来的东西，但前缀确实撞上了 PROXY_ORIGIN，不兜住的话会从
+     * 「原样返回一个不认识的 URL」变成「调用方收到一个异常」。
      */
     unProxyUrl(url: string) {
-        if (this.proxy && url && url.startsWith('http://localhost')) {
-            const urlObj = new URL(url)
-            if (urlObj.pathname == '/proxy') {
-                const realUrl = urlObj.searchParams.get('url')
-                if (realUrl) {
-                    return decodeURIComponent(realUrl)
+        if (this.proxy && url && url.startsWith(PROXY_ORIGIN)) {
+            try {
+                const urlObj = new URL(url)
+                if (urlObj.pathname == '/proxy') {
+                    const realUrl = urlObj.searchParams.get('url')
+                    if (realUrl) {
+                        return realUrl
+                    }
                 }
+            } catch {
+                // 解析不了就当普通 URL，原样交回去
             }
         }
         return url

@@ -46,6 +46,7 @@ import { sendMsgRaw } from './msgUtil'
 import { dbGetLatest } from './localHistoryUtil'
 import { parseMsg } from '../sender'
 import { Notify } from '../notify'
+import { panGap, writePanGap } from './chatViewport'
 
 const popInfo = new PopInfo()
 const logger = new Logger()
@@ -67,20 +68,14 @@ export function scrollToMsg(seqName: string, showAnimation: boolean, showHighlig
             // 内容整体下移；减小则上移。所以「当前 gap + 要挪的距离」就是目标 gap。
             // panRect.bottom - msgRect.top 是消息顶边离面板底边多远；减掉一个
             // clientHeight 就换算成「从面板顶边起算」，再加那 10px 边距。
+            //
+            // 读写都走 chatViewport 里那两个函数：反转流的符号、越界夹紧、以及「补偿
+            // 必须瞬时、主动跳转才平滑」这条约定都只有那一份实现，这里不再自己算一遍。
             const panRect = pan.getBoundingClientRect()
             const msgRect = msg.getBoundingClientRect()
-            const maxGap = Math.max(0, pan.scrollHeight - pan.clientHeight)
-            const gap = Math.max(0, -pan.scrollTop)
-            const target = Math.min(
-                Math.max(gap + (panRect.bottom - msgRect.top) - pan.clientHeight + 10, 0),
-                maxGap,
-            )
-            // 同 Chat.vue 的 setScrollGap：逐次指定 behavior，不要改容器的
-            // scroll-behavior —— 那会留下全局 smooth，把别人的补偿滚动也变成动画。
-            pan.scrollTo({
-                top: -target,
-                behavior: showAnimation ? 'smooth' : 'instant',
-            })
+            const target =
+                panGap(pan) + (panRect.bottom - msgRect.top) - pan.clientHeight + 10
+            writePanGap(pan, target, showAnimation)
             if (showHighlight) {
                 msg.style.transition = 'background 1s'
                 msg.style.background = 'rgba(0, 0, 0, 0.06)'

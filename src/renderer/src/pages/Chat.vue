@@ -70,10 +70,10 @@
             </div>
         </div>
         <!-- 消息显示区。这里原本用内联样式把这个容器设成了平滑滚动：容器级一旦设上，
-             所有程序化的滚动都会变成一段动画，包括「上拉加载历史时把视口钉在原地」的
-             那几次补偿。补偿只要不是瞬时完成，就会和用户自己的手势、以及新插入内容的
-             高度变化三者互相追着跑 —— 这正是上拉抖动的主因。平滑只该用在「主动跳转」
-             上，所以改成由 setScrollGap() 的 behavior 参数逐次指定。
+             所有程序化的滚动都会变成一段动画，包括锚定引擎「让视口跟着内容走」的那些
+             写入。写入只要不是瞬时完成，就会和用户自己的手势、以及新插入内容的高度变化
+             三者互相追着跑 —— 这正是上拉抖动的主因。平滑只该用在「主动跳转」上，所以
+             改成由 chatViewport 的 setGap() 逐次指定（见 chatViewport.ts）。
              （刻意不逐字写出被删掉的那条声明，免得 grep 审样式时匹配到注释。） -->
         <!-- 三个孩子的 DOM 顺序 = 反转流向里「离滚动原点从近到远」：
              底部占位 → 消息列表 → 历史状态区。column-reverse 下第一个孩子贴底（原点），
@@ -106,7 +106,6 @@
                             @click="msgClick($event, msgIndex)"
                             @show-menu="showMsgMeun"
                             @jump-reply="jumpToReply"
-                            @image-loaded="imgLoadedScroll"
                             @left-move="replyMsg"
                             @send-poke="sendPoke" />
                         <!-- 其他通知消息 -->
@@ -137,7 +136,6 @@
                             :data="msgIndex"
                             @jump-reply="jumpToReply"
                             @show-menu="showMsgMeun"
-                            @image-loaded="imgLoadedScroll"
                             @left-move="replyMsg" />
                     </template>
                 </TransitionGroup>
@@ -624,6 +622,11 @@ import {
     getImageUrlData,
     getDifferencesWithRanges
 } from '@renderer/function/utils/msgUtil'
+import {
+    createChatViewport,
+    panGap,
+    panMaxGap,
+} from '@renderer/function/utils/chatViewport'
 import { Logger, LogType, PopInfo, PopType } from '@renderer/function/base'
 import { promoteReplyTarget, requestReplyPreview } from '@renderer/function/msg'
 import { Connector } from '@renderer/function/connect'
@@ -673,6 +676,19 @@ const msgPan = useTemplateRef<HTMLDivElement>('msgPan')
 const chatPadding = useTemplateRef<HTMLSpanElement>('chatPadding')
 const sendMore = useTemplateRef<HTMLDivElement>('sendMore')
 const mainInput = useTemplateRef<HTMLInputElement | HTMLTextAreaElement>('mainInput')
+
+/**
+ * 视口锚定引擎。**滚动位置只有它能自动写**：它盯着 .chat 的三个孩子，任何一个的高度
+ * 变了都按同一条规则决定视口要不要动（模型和规则写在 chatViewport.ts 的文件头）。
+ *
+ * 以前这份判断散在三处（图片解码事件、列表更新、输入区预留区），每处都要自己算「我刚
+ * 造成了多大位移、补多少回去」，判据还各不相同 —— 同一段高度被两处认领就是双倍补偿，
+ * 判据差一档就是漏补，那正是图片陆续解码时列表抖的来源。现在这里只有「主动跳转」还会
+ * 写滚动位置（回到底部、跳到某条消息），其余一律交给引擎。
+ *
+ * 取滚动容器用回调而不是现取的节点：切会话时这个节点会被换掉。
+ */
+const chatViewport = createChatViewport(() => msgPan.value ?? undefined)
 
 type ForwardAction = 'single-message' | 'individual-messages' | 'merged-messages'
 
@@ -866,6 +882,9 @@ onMounted(() => {
     if (session) history.add(session)
 
     updateList(list.length, 0)
+    // 接管锚定。挂上之后内容高度的任何变化都由它一处决定视口往哪走 —— 这是本文件里
+    // 唯一会「自动」写滚动位置的东西（主动跳转另算）。
+    chatViewport.attach()
     watch(() => list.map((item) => item.message_id + '_' + item.fake_msg),
         (newIds, oldIds = []) => {
             // 把列表头的 key 一并交给 updateList：靠「头部有没有换人」就能判断这次
@@ -897,6 +916,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+    chatViewport.detach()
     if (resizeMainInputFrame !== null) {
         cancelAnimationFrame(resizeMainInputFrame)
         resizeMainInputFrame = null
@@ -951,30 +971,17 @@ function updateChatPadding() {
         ): morePan.getBoundingClientRect().top
     const chatBottom = chatPan.getBoundingClientRect().bottom
     const reserve = Math.max(0, chatBottom - contentTop)
-    const previous = padding.getBoundingClientRect().height
-    const gap = scrollGap(chatPan)
 
     // 这块预留区是滚动内容里贴着原点的那一块（chat.css 的 column-reverse）：它的高度
-    // 一变，上面所有消息的「离底距离」就整体跟着变，用户不在底部时屏幕上那一屏会被
-    // 整块推着走。输入区一长高（换行、回复条、表情面板弹开）就是一次这种推 —— 这是
-    // 反转流向下除「新消息接在近端」「近端图片解码」之外，最后一个还会推视口的东西。
+    // 一变，上面所有消息的「离底距离」就整体跟着变。输入区一长高（换行、回复条、表情
+    // 面板弹开）就是一次这种推 —— 这是反转流向下除「新消息接在近端」「近端内容长高」
+    // 之外，最后一个还会推视口的东西。
     //
-    // 补不补只看一件事：预留区整体在视口之外吗。预留区只影响 d ∈ [0, reserve] 这一段
-    // （d 是离原点的距离，原点在最新一条那边），视口底边落在 d = gap，所以「整段都在
-    // 视口下方」就等价于 gap ≥ reserve。此时屏幕上没有任何一条消息和它相邻，谁也谈不
-    // 上被盖住，那就把高度差从 gap 里补掉 —— 和 updateList 里「近端长高」用的是同一条
-    // 规则。反过来（gap 比它小），用户正看着贴着输入区的那几条，它们必须让位：贴底时
-    // 最新一条要跟着输入区长高往上走，这正是预留区存在的意义，这里就什么都不做。
-    //
-    // 判据必须用「新的」reserve：收缩的时候旧值更大，拿它当门槛会把 gap 恰好落在新旧
-    // 之间的用户整个漏掉（面板 90→50、gap 70 就是一个 40px 的跳）。收缩且 gap + delta
-    // 掉到 0 以下时，setScrollGap 会夹到 0 —— 那是原点处的硬边界，内容只能少走一点，
-    // 不能不走：夹住之后最新一条正好贴在输入区上沿，跳过不补反而会把它挤到框下面去。
+    // 补不补不再由这里判断：预留区就是 chatViewport 观察的那三个孩子之一，高度一变它就
+    // 是一次普通的内容高度变化，引擎按同一条规则处理 —— 用户不在底部时（预留区整段都在
+    // 视口之外）把高度差从 gap 里补掉，屏幕上那一屏纹丝不动；用户贴着底部时预留区就在
+    // 眼前，最新一条要跟着输入区长高往上走，引擎什么都不做。这里只负责把高度写出去。
     padding.style.height = reserve + 'px'
-    const delta = reserve - previous
-    if (delta !== 0 && gap >= reserve) {
-        setScrollGap(chatPan, gap + delta)
-    }
 }
 
 function scheduleChatPaddingUpdate(afterUpdate?: () => void) {
@@ -1070,10 +1077,10 @@ function chatScroll(event: Event, pass: boolean) {
     if(pass) return
 
     const body = event.target as HTMLDivElement
-    // 反转流向（chat.css）：scrollTop 0 在底部，往上翻才是负值。统一用
-    // scrollGap 换算成「离底多远」的正数再判断，别在业务里碰符号。
-    const gap = scrollGap(body)
-    const maxGap = Math.max(0, body.scrollHeight - body.clientHeight)
+    // 反转流向（chat.css）：scrollTop 0 在底部，往上翻才是负值。统一用 panGap 换算成
+    // 「离底多远」的正数再判断，别在业务里碰符号（符号只住在 chatViewport.ts 里）。
+    const gap = panGap(body)
+    const maxGap = panMaxGap(body)
     // 翻到最远端（离底最远）＝ 已经翻到最上面那条，继续往上就该要历史了。
     // 留 2px 容差，抹掉缩放/像素取整带来的误差；maxGap 为 0 时不触发，
     // 免得内容还没填满一屏就反复请求。
@@ -1202,39 +1209,8 @@ function fillSeqGaps(anchorMsgIds: string[]) {
     }
 }
 
-/**
- * 「视口离滚动原点（最新一条）多远」，像素，恒 >= 0。
- *
- * .chat 是反转流向（chat.css 的 column-reverse），滚动坐标也跟着反了：scrollTop
- * 为 0 表示停在底部，往上翻是负值，范围 [-max, 0]。这是 CSSOM View 对反转流的
- * 规定，WebKit 与 Chromium 都这么报。取负号把它翻成「离底多远」，其余逻辑一律拿
- * 这个正数思考 —— 符号只在这一处出现，改内核约定也只需改这里。
- */
-function scrollGap(pan: HTMLElement): number {
-    return Math.max(0, -pan.scrollTop)
-}
-
-/**
- * 把视口钉在「离底 gap 像素」处（gap = 0 即底部），越界自动夹紧。
- *
- * behavior 逐次指定，不再去改容器的 scroll-behavior：补偿滚动必须瞬时，只有主动
- * 跳转（回到底部、跳到某条消息）才用平滑 —— 容器级一旦设成 smooth，所有补偿都会
- * 变成动画，和用户手势、内容高度变化互相追着跑，那正是最初的抖动源。
- */
-function setScrollGap(pan: HTMLElement, gap: number, showAnimation = false) {
-    const maxGap = Math.max(0, pan.scrollHeight - pan.clientHeight)
-    const target = Math.min(Math.max(gap, 0), maxGap)
-    pan.scrollTo({
-        top: -target,
-        behavior: showAnimation ? 'smooth' : 'instant',
-    })
-}
-
 function scrollBottom(showAnimation = false) {
-    const pan = document.getElementById('msgPan')
-    if (pan !== null) {
-        setScrollGap(pan, 0, showAnimation)
-    }
+    chatViewport.setGap(0, showAnimation)
 }
 
 function scrollToMsgLocal(message_id: string) {
@@ -1279,48 +1255,6 @@ function jumpToReply(message_id: string) {
     }
     chatStore.chatInfo.show.jump = message_id
     requestReplyPreview(key)
-}
-
-/**
- * 图片解码完成、把消息撑高之后补一次滚动。
- * @param height 图片这次解码撑开的高度（MsgBody 只在框没预占位时才发这个事件，
- *               所以这里拿到的就是真实的撑开量，不是整张图的高度）
- * @param imgBottom 图片底边的位置（视口坐标，由 MsgBody 随事件带出）
- *
- * 这是手写的「滚动锚定」替身 —— chat.css 里 `.chat-pan > div.chat` 为什么关掉
- * overflow-anchor，那条注释解释了。反转流向下，视口是钉在「离底部 gap」上的，所以
- * 锚点取面板**底边**：底边上那一点内容要么就是图片本身，要么离原点比图片更近
- * （更靠下），绝不会在图片上方。判据只有一条：图片底边有没有落到面板底边之下。
- *
- * - 图片底边在面板底边以下（imgBottom >= panBottom）：底边那点内容在图片里或更
- *   靠近原点的一侧，图片一撑开，它们整体被往远端推了整整一个 height（离底变远
- *   了 height），所以 gap 要补回同样的量，屏幕上那一屏才不动。
- * - 图片底边在面板底边以上：底边那点内容在图片下方（离原点更近），压根没动；
- *   补了就是把视图往下拽，所以什么都不做。
- *
- * 判据必须是台阶，不能是「图片与底边重叠的那一截」（min(height, imgBottom - panBottom)）。
- * 那一截是图片自身的高度分布，不是锚点的位移量：底边以下的那部分图片高度本来就是
- * 解码前不存在、解码后凭空多出来的，它上面的内容全都被推了一整个 height。用那一截
- * 衡量会系统性补少 —— imgBottom = panBottom + 50、height = 200 时只补 50、剩 150
- * 的跳；imgBottom == panBottom 时干脆补 0、整 200 全跳，而那正是翻历史时最常见的
- * 位置：旧消息的图片刚好从视口底边冒头。
- *
- * 这里原本还有一条「列表短于 20 条就直接回到底部」。去掉它是因为反转流向让它既没用
- * 又有害：贴底时原点本来就钉住，图片只会从固定的底边往上长（实测最新一条图片撑开
- * 120px 后，它的底边位置和离输入区的间距都一个像素没动），不需要任何动作；而没贴底
- * 时那条分支就是把用户从历史里直接拽回底部 —— 列表越短越可能触发（20 条以内），
- * 上拉翻历史时图一解码就跳一下，正是「偶发跳动」的手感来源。
- */
-function imgLoadedScroll(height: number, imgBottom?: number) {
-    const pan = document.getElementById('msgPan')
-    if(pan) {
-        if (imgBottom === undefined) {
-            // 拿不到底边位置（老调用路径）就退回「跟着图片走」的行为
-            setScrollGap(pan, scrollGap(pan) + height)
-        } else if (imgBottom >= pan.getBoundingClientRect().bottom) {
-            setScrollGap(pan, scrollGap(pan) + height)
-        }
-    }
 }
 
 function mainKey(event: KeyboardEvent) {
@@ -2578,36 +2512,22 @@ function updateList(
         uiStore.nowGetHistory = true
     }
 
-    const pan = document.getElementById('msgPan')
-    if (pan !== null) {
-        const heightBefore = pan.scrollHeight
-        nextTick(() => {
-            const newPan = document.getElementById('msgPan')
-            if (newPan !== null) {
-                const delta = newPan.scrollHeight - heightBefore
-                // prepended = 往列表头插了历史。这种变更一律不碰视口：插入点在离
-                // 原点最远的一端，原点附近那一屏一个像素都不动 —— 这正是换反转流向
-                // 要买的账。以前这里要按「新高度 − 旧高度」补一次 scrollTop，补算不准
-                // 就跳：图片迟到、状态区高度变化、旗子提前落下，任何一个都会让补偿和
-                // 真实布局对不上。现在不再是「补多少」，而是「原点本来就不动」。
-                if (!prepended) {
-                    if (delta > 0 && tags.value.showBottomButton) {
-                        // 新消息接在近端（下方），把上面已经看过的内容整体往远端推了
-                        // delta。用户没停在底部（还亮着「回到底部」），得把这 delta 加
-                        // 回 gap，屏幕上那一屏才不跳 —— 近端长高唯一需要补偿的情况。
-                        setScrollGap(newPan, scrollGap(newPan) + delta)
-                    } else if (!tags.value.showBottomButton) {
-                        // 停在底部附近：钉回原点。反转流向下「停在底部」本来就零操作，
-                        // 这一步只是把「近底部」这一档也拉齐到底部，和旧行为一致。
-                        setScrollGap(newPan, 0, true)
-                    }
-                }
-                if (oldLength <= 0) {
-                    // 首屏：无动画直接落到底部（最新一条）
-                    setScrollGap(newPan, 0)
-                }
-            }
+    // 「列表一变就补一次滚动」这件事没有了。近端接新消息、远端插历史、状态区显隐，都只是
+    // 内容高度变化，全部交给 chatViewport 按同一条规则处理：插在远端本来就不动视口；接在
+    // 近端由引擎把高度差补进 gap。判据是「底部那点内容动没动」，不是「高度差是多少」，
+    // 所以图片迟到、状态区高度变化、旗子提前落下都不会让它算错 —— 以前那版按
+    // 「新高度 − 旧高度」补 scrollTop，这三样任何一个都能让它补错。
+    //
+    // 下面这条首屏写入不能省。切会话时 #msgPan 这个节点是被复用的（App.vue 里那个
+    // <component :is> 没有 key），节点里的 scrollTop 还是上一个会话留下的，引擎据此会把
+    // 自己当成「用户正在翻历史」而拒绝贴底。这里写一次 gap = 0 把状态摆正，之后引擎就按
+    // 「跟随最新」把视口钉在原点。
+    if (oldLength <= 0) {
+        nextTick(() => chatViewport.setGap(0))
+    }
 
+    if (document.getElementById('msgPan') !== null) {
+        nextTick(() => {
             const getImgList = () => {
                 const getImgList = [] as string[]
                 for(const item of list) {
