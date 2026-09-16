@@ -990,6 +990,9 @@ msgstr ""
 msgid "视频"
 msgstr ""
 
+msgid "视频无法播放，文件可能已被清理"
+msgstr ""
+
 msgid "合并转发"
 msgstr ""
 

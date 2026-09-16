@@ -990,6 +990,9 @@ msgstr "語音"
 msgid "视频"
 msgstr "影片"
 
+msgid "视频无法播放，文件可能已被清理"
+msgstr "影片無法播放，檔案可能已被清理"
+
 msgid "合并转发"
 msgstr "轉傳合併訊息"
 

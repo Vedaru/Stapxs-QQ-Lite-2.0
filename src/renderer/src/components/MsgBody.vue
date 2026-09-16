@@ -187,15 +187,18 @@
                                 </span>
                             </div>
                         </div>
-                        <div v-else-if="item.type == 'video'"
+                        <div v-else-if="item.type == 'video' && getVideoSrc(item)"
                             class="msg-video">
                             <video playsinline controls muted
                                 autoplay>
-                                <source :src="item.url"
+                                <source :src="getVideoSrc(item)"
                                     type="video/mp4">
                                 现在还有不支持 video tag 的浏览器吗？
                             </video>
                         </div>
+                        <span v-else-if="item.type == 'video'" class="msg-unknown">
+                            {{ '( ' + $t('视频无法播放，文件可能已被清理') + ' )' }}
+                        </span>
                         <template v-else-if="item.type == 'record'">
                             <VoiceMsg
                                 :item="item"
@@ -588,6 +591,25 @@ async function loadCachedImage(url: string) {
 
 function getImgSrc(url: string): string {
     return resolvedImages.value[url] ?? backend.proxyUrl(url)
+}
+
+/**
+ * 取视频段真正能播的地址，拿不到就返回空串（调用处据此降级成纯文本）。
+ *
+ * OneBot 的 url 字段并不保证一定是地址：NapCat 的 videoElement 在拿播放地址失败时
+ * catch 里回落到 filePath，也就是把 QQ 容器里的本地路径原样塞进 url。这种值一旦写进
+ * <source src>，webview 会把它当相对路径去请求 → 404，界面上留下来一个永远转圈的
+ * 死播放器，比直接说明播放不了更糟。所以这里只放行确实能取的协议。
+ */
+function getVideoSrc(item: { url?: string }): string {
+    const url = item.url
+    if (typeof url !== 'string' || url.length === 0) return ''
+
+    if (url.startsWith('base64://')) return 'data:video/mp4;base64,' + url.substring(9)
+    if (url.startsWith('data:') || url.startsWith('blob:')) return url
+    if (url.startsWith('http://') || url.startsWith('https://')) return url
+
+    return ''
 }
 
 function getImageKey(index: number, url: string) {
