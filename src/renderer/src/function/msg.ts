@@ -16,7 +16,7 @@ import qed from '@renderer/assets/qed.txt?raw'
 import app from '@renderer/main'
 import Option from './option'
 
-import Umami from '@stapxs/umami-logger-typescript'
+import { trackEvent as umTrackEvent } from '@renderer/function/utils/umami'
 
 import {
     buildMsgList,
@@ -28,6 +28,8 @@ import {
     sendMsgAppendInfo,
     preloadImageSizesForMsgs,
     firstScreenMsgCount,
+    PRELOAD_WAIT_CAP_OPEN_MS,
+    PRELOAD_WAIT_CAP_LIVE_MS,
 } from '@renderer/function/utils/msgUtil'
 import {
     delay,
@@ -58,7 +60,7 @@ import { NotifyInfo } from './elements/system'
 import { Notify } from './notify'
 import { backend } from '@renderer/runtime/backend'
 import { dbRevokeMessage, saveMessagesWithSideEffects } from './utils/localHistoryUtil'
-import { addDownloadTask, completeUploadTask } from '@renderer/components/FileManager.vue'
+import { addDownloadTask, completeUploadTask } from '@renderer/state/fileTransfer'
 import { refreshFavicon } from './favicon'
 import { Img } from './model/img'
 import { ensurePinyinLoaded, getPinyin, isPinyinReady } from './utils/pinyin'
@@ -960,7 +962,12 @@ const msgFunctions = {
                 // 补出来的这一段是插进列表**中间**的，紧挨锚点的那一头就落在视口里 ——
                 // 和 saveMsg 同理，尺寸得赶在这些行挂载之前量好。等的是这一段自己的
                 // 首屏：firstScreenMsgCount 从段尾往回数，而段尾正是挨着锚点的那几行。
-                await preloadImageSizesForMsgs(list, firstScreenMsgCount(list))
+                // 同样有上限：这是「点引用跳过去」的路，跳转的体感延迟不能听命于网络。
+                await preloadImageSizesForMsgs(
+                    list,
+                    firstScreenMsgCount(list),
+                    PRELOAD_WAIT_CAP_OPEN_MS,
+                )
                 replaceMessageListInPlace(inserted)
                 // 同步存入本地 DB，以便下次直接从本地加载
                 saveMessagesWithSideEffects(authStore.loginInfo.uin, list)
@@ -1885,8 +1892,17 @@ async function saveMsg(msg: any, append = undefined as undefined | string) {
         // 远端内容 —— 长在视口上方的那一截推不动用户正在看的东西，只有视口里的会长给人
         // 看见。所以往回数够一屏就够了（firstScreenMsgCount），剩下的图在后台自己加载完。
         // 唯一例外是上拉接历史（append == 'top'）：这一批整个接在视口远端，等它没有意义。
+        //
+        // 等待有上限：Signal / Telegram 的消息不用等，是因为宽高跟着消息元数据一起走；
+        // OneBot 段里没有宽高，尺寸只能去网络上现量，慢网络下「等量完再上屏」就等于让
+        // 消息到达听命于最慢那张图。所以来新消息（append == 'bottom'，到达延迟最显眼）
+        // 只等一个快速探测的窗口，打开会话 / 整页替换等得稍长 —— 超时就先顶预估框上屏
+        // （MsgBody.preSize 的 estimate 分支），探测在后台继续，量到后框再响应式地换成
+        // 真实比例，纠正量被预估框压住、由 chatViewport 锚定兜住。
         const waitCount = append == 'top' ? 0 : firstScreenMsgCount(list)
-        await preloadImageSizesForMsgs(list, waitCount)
+        const waitCap =
+            append == 'bottom' ? PRELOAD_WAIT_CAP_LIVE_MS : PRELOAD_WAIT_CAP_OPEN_MS
+        await preloadImageSizesForMsgs(list, waitCount, waitCap)
 
         // 保存到本地历史
         saveMessagesWithSideEffects(authStore.loginInfo.uin, list)
@@ -2387,7 +2403,7 @@ function newMsg(_: string, data: any) {
                     ],
                 }
                 uiStore.popBoxList.push(popInfo)
-                Umami.trackEvent('show_qed', { times: qed_try_times })
+                umTrackEvent('show_qed', { times: qed_try_times })
             }
             qed_try_times++
         }

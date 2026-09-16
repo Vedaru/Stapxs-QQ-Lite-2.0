@@ -3,7 +3,7 @@ import FileDownloader from 'js-file-downloader'
 import option from '@renderer/function/option'
 import semver from 'semver'
 import appInfo from '../../../../../package.json'
-import Umami from '@stapxs/umami-logger-typescript'
+import { trackEvent as umTrackEvent, trackIdentify as umTrackIdentify } from './umami'
 
 import AboutPan from '@renderer/components/AboutPan.vue'
 import UpdatePan from '@renderer/components/UpdatePan.vue'
@@ -1296,7 +1296,7 @@ export function sendStatEvent(event: string, data: { [key: string]: any }, saveL
     }
 
     if (!option.get('close_ga') && !import.meta.env.DEV) {
-        Umami.trackEvent(event, data)
+        umTrackEvent(event, data)
     }
 }
 
@@ -1306,7 +1306,7 @@ export function sendStatEvent(event: string, data: { [key: string]: any }, saveL
  */
 export function sendIdentifyData(data: { [key: string]: any }) {
     if (!option.get('close_ga') && !import.meta.env.DEV) {
-        Umami.trackIdentify(data)
+        umTrackIdentify(data)
     }
 }
 

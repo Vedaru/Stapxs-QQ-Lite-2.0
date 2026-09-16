@@ -652,7 +652,7 @@ import { useSettingsStore } from '@renderer/state/settings'
 import { useAuthStore } from '@renderer/state/auth'
 import { useChatStore } from '@renderer/state/chat'
 import { useContactStore } from '@renderer/state/contact'
-import { addUploadTask, failUploadTask } from '@renderer/components/FileManager.vue'
+import { addUploadTask, failUploadTask } from '@renderer/state/fileTransfer'
 
 defineOptions({ name: 'ViewChat' })
 

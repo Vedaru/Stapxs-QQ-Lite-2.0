@@ -133,7 +133,7 @@
                                 :src="getImgSrc(item.url)"
                                 data-type="image"
                                 :data-img-url="item.url"
-                                v-bind="preSize(item.url)"
+                                v-bind="preSize(item.url, true)"
                                 @load="imageLoaded"
                                 @error="imgLoadFail"
                                 @click="imgClick(item.url)">
@@ -448,7 +448,7 @@ import { dbGetImage, hashUrl } from '@renderer/function/utils/localHistoryUtil'
 import JsonSegComp from './msg-component/JsonSegComp.vue'
 import XmlSegComp from './msg-component/XmlSegComp.vue'
 import VoiceMsg from './VoiceMsg.vue'
-import { addMusic, MusicInfo } from './MusicPlayer.vue'
+import { addMusic, MusicInfo } from '@renderer/state/musicPlayer'
 
 type Msg = any
 type IUser = any
@@ -761,9 +761,36 @@ function preImgClass(url: string) {
  * 315px —— 两端都落在最终框里，谁也不去压谁，图才是原始比例、也是它该有的大小。
  * 反过来的 max-width（宽图那条）不用管：它压的是宽度、高度是 auto 会跟着重算，比例不丢。
  */
-function preSize(url: string) {
+/**
+ * 尺寸还没量到时的预估占位框（自然尺寸 480x360，4:3）。
+ *
+ * 为什么要有它：等待探测是有上限的（msgUtil 的 PRELOAD_WAIT_CAP_*，Signal / Telegram
+ * 不用等是因为宽高跟着消息元数据走，OneBot 段里没有，只能现量）。慢网络下探测赶不上
+ * 上限时，没有预估框的那一行出生是零高，等探测 / 解码落定才长到全高 —— 纠正量是整张
+ * 图那么高。给一个中性预估框之后，纠正量只剩「预估和实际的差」（聊天图大多是 4:3 /
+ * 3:4 / 16:9，差值通常在几十像素），再交给 chatViewport 锚定兜住。
+ *
+ * 只在普通图片上用（模板里 estimate=true 的那一处）：表情图（marketface / mface）不给 ——
+ * 它们的真尺寸远小于这个框，预估错得离谱，还不如不占。
+ *
+ * 量到尺寸后 imageInfos 是响应式的，这个函数会被重算，框自动换成真实比例 —— 预估框的
+ * 生命周期只有「探测慢于等待上限」那一小段。
+ */
+const FALLBACK_IMAGE_SIZE = { w: 480, h: 360 }
+
+function preSize(url: string, estimate = false) {
     const info = getImageInfo(url)
-    if (!info) return undefined
+    if (!info) {
+        if (!estimate) return undefined
+        const width = imageWidthCss(FALLBACK_IMAGE_SIZE.w, FALLBACK_IMAGE_SIZE.h)
+        return {
+            style: {
+                '--width': width,
+                'aspect-ratio': `${FALLBACK_IMAGE_SIZE.w} / ${FALLBACK_IMAGE_SIZE.h}`,
+                width,
+            },
+        }
+    }
     const long = isLongImage(url)
     // 长图那套固定框（20vw x 40vh）本来就是相对单位，宽度只有 --width 这一个用途。
     const width = long ? `${info.w}px` : imageWidthCss(info.w, info.h)

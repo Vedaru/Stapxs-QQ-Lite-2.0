@@ -1,5 +1,7 @@
 import { i18n } from '../main'
-import VConsole from 'vconsole'
+// vConsole 只在 Capacitor 移动端实例化，静态 import 会让它进所有平台的首屏包
+// （约 280KB），这里只留类型，真正用到的地方再动态加载
+import type VConsole from 'vconsole'
 
 import { IpcRenderer } from '@electron-toolkit/preload'
 import { InvokeArgs, InvokeOptions } from '@tauri-apps/api/core'
@@ -139,10 +141,11 @@ export const backend = {
             this.type = 'capacitor';
             const capacitor = window.Capacitor as CapacitorGlobal & Record<string, any>
             const plugins = (capacitor.Plugins ?? {}) as CapacitorPluginRegistry
+            const { default: VConsoleImpl } = await import('vconsole')
             this.function = {
                 capacitor,
                 plugins,
-                vConsole: new VConsole({
+                vConsole: new VConsoleImpl({
                     theme: useSettingsStore().darkMode ? 'dark' : 'light',
                 })
             }

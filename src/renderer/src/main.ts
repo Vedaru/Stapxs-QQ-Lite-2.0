@@ -8,9 +8,10 @@ import { createPinia } from 'pinia'
 import { createI18n } from 'vue-i18n'
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome'
 import { library } from '@fortawesome/fontawesome-svg-core'
-import { fas } from '@fortawesome/free-solid-svg-icons'
-
 import { faSquare, faHeart } from '@fortawesome/free-regular-svg-icons'
+
+// 只注册用到的 solid 图标子集（原 library.add(fas) 会把约 1400 个图标全打进主包）
+import './assets/icons'
 
 import './assets/css/motion.css'
 import './assets/css/view.css'
@@ -19,15 +20,8 @@ import './assets/css/msg.css'
 import './assets/css/options.css'
 import './assets/css/sys_notice.css'
 
-import { initAMapApiLoader } from '@vuemap/vue-amap'
 import { getPortableFileLang } from './function/utils/systemUtil'
 import { preloadPinyin } from './function/utils/pinyin'
-
-// 初始化高德地图 API
-initAMapApiLoader({
-    key: import.meta.env.VITE_APP_AMAP_KEY,
-    securityJsCode: import.meta.env.VITE_APP_AMAP_SECRET,
-})
 
 /* eslint-disable no-console */
 const zh = getPortableFileLang('zh-CN')
@@ -49,7 +43,6 @@ app.use(i18n)
 app.use(createPinia())
 app.use(VueClipboard)
 
-library.add(fas)
 library.add(faSquare, faHeart)
 app.component('FontAwesomeIcon', FontAwesomeIcon)
 

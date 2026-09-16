@@ -219,7 +219,7 @@
                     <Qzone />
                 </div>
                 <div class="opt-main-tab" style="opacity: 0">
-                    <Options :show="tags.page == 'Options'" :class="tags.page == 'Options' ? 'active' : ''"
+                    <Options v-if="optionsMounted" :show="tags.page == 'Options'" :class="tags.page == 'Options' ? 'active' : ''"
                         :config="settingsStore.sysConfig" />
                 </div>
             </div>
@@ -246,6 +246,7 @@
         <Transition name="music-player-float">
             <div v-show="tags.showMusicPlayer" class="global-music-player ss-card">
                 <MusicPlayer
+                    v-if="musicPlayerMounted"
                     @open-panel="toggleMusicPlayer"
                     @update-lyric="updateMusicLyric"
                     @update-status="updateMusicStatus" />
@@ -253,7 +254,7 @@
         </Transition>
         <Transition name="music-player-float">
             <div v-show="tags.showFileManager" class="global-music-player ss-card">
-                <FileManager @open-panel="toggleFileManager" />
+                <FileManager v-if="fileManagerMounted" @open-panel="toggleFileManager" />
             </div>
         </Transition>
         <Transition name="modal">
@@ -305,17 +306,14 @@
 </template>
 
 <script setup lang="ts">
-import Spacing from 'spacingjs/src/spacing'
 import Option from '@renderer/function/option'
-import Umami from '@stapxs/umami-logger-typescript'
 import * as App from './function/utils/appUtil'
-import anime from 'animejs'
+import { trackPageView as umTrackPageView, initializeUmami } from './function/utils/umami'
 import packageInfo from '../../../package.json'
 
-import { computed, watch, onMounted, onUnmounted, shallowReactive, shallowRef, provide } from 'vue'
+import { computed, watch, onMounted, onUnmounted, shallowReactive, shallowRef, provide, defineAsyncComponent } from 'vue'
 import { Connector, login as loginInfo, loadConnectionHistory, loadConnectionFromHistory, deleteConnectionHistory, decodeStoredToken } from '@renderer/function/connect'
 import { Logger, popList, PopInfo, LogType } from '@renderer/function/base'
-import { setLoginWaveTimer } from '@renderer/function/msg'
 import { BaseChatInfoElem } from '@renderer/function/elements/information'
 import { useConnectionStore } from '@renderer/state/connection'
 import { useUIStore } from '@renderer/state/ui'
@@ -334,12 +332,15 @@ import {
     toBackgroundImageStyle,
 } from '@renderer/function/utils/backgroundUtil'
 
-import Options from '@renderer/pages/Options.vue'
-import Friends from '@renderer/pages/Friends.vue'
-import Messages from '@renderer/pages/Messages.vue'
-import Qzone from '@renderer/pages/Qzone.vue'
-import MusicPlayer, { getCurrentMusic } from './components/MusicPlayer.vue'
-import FileManager, { panelVisible, closePanel, getDownloadTasks, getUploadTasks } from './components/FileManager.vue'
+// 页面与悬浮面板全部改为异步组件，按需拆分 chunk，首屏不再一次性解析全部代码
+const Options = defineAsyncComponent(() => import('@renderer/pages/Options.vue'))
+const Friends = defineAsyncComponent(() => import('@renderer/pages/Friends.vue'))
+const Messages = defineAsyncComponent(() => import('@renderer/pages/Messages.vue'))
+const Qzone = defineAsyncComponent(() => import('@renderer/pages/Qzone.vue'))
+const MusicPlayer = defineAsyncComponent(() => import('./components/MusicPlayer.vue'))
+const FileManager = defineAsyncComponent(() => import('./components/FileManager.vue'))
+import { getCurrentMusic, openPanelRequest, registerMusicPlayerOptions } from '@renderer/state/musicPlayer'
+import { panelVisible, closePanel, getDownloadTasks, getUploadTasks } from '@renderer/state/fileTransfer'
 import GlobalSessionSearchBar from './components/GlobalSessionSearchBar.vue'
 import NtViewer from './components/ViewerCom.vue'
 import Tooltips from './components/tooltip/Tooltips.vue'
@@ -364,6 +365,10 @@ const popInfo = new PopInfo()
 const appMsgs = popList
 const loadHistory = App.loadHistory
 const isNarrowLayout = shallowRef(window.innerWidth <= 500)
+// 面板按需挂载标记：设置页 / 音乐播放器 / 文件管理器首次用到时才挂载
+const optionsMounted = shallowRef(false)
+const musicPlayerMounted = shallowRef(false)
+const fileManagerMounted = shallowRef(false)
 
 // 响应式状态
 const connectionStore = useConnectionStore()
@@ -372,7 +377,6 @@ const settingsStore = useSettingsStore()
 const authStore = useAuthStore()
 const contactStore = useContactStore()
 const chatStore = useChatStore()
-let musicSyncTimer = -1
 const tags = shallowReactive({
     page: 'Home',
     showChat: false,
@@ -417,6 +421,9 @@ function toggleMusicPlayer(open: boolean | undefined) {
     } else {
         tags.showMusicPlayer = !tags.showMusicPlayer
     }
+    if (tags.showMusicPlayer) {
+        musicPlayerMounted.value = true
+    }
     refreshCurrentMusic()
 }
 function toggleFileManager(open: boolean | undefined) {
@@ -427,6 +434,7 @@ function toggleFileManager(open: boolean | undefined) {
     }
     // 同步状态到 FileManager 模块
     if (tags.showFileManager) {
+        fileManagerMounted.value = true
         panelVisible.value = true
     } else {
         closePanel()
@@ -442,7 +450,14 @@ function updateMusicStatus(isPlaying: boolean) {
 async function refreshCurrentMusic() {
     const nowMusic = getCurrentMusic()
     if (!nowMusic) {
-        tags.currentMusic = null
+        if (tags.currentMusic !== null) {
+            tags.currentMusic = null
+        }
+        return
+    }
+    // 曲目没变就不动：这里之前每秒无条件重建对象并重新处理封面，
+    // 导致侧边栏每秒白做一次响应式更新
+    if (tags.currentMusic && tags.currentMusic.title === nowMusic.title) {
         return
     }
     let coverLight = tags.currentMusic?.coverLight ?? true
@@ -605,7 +620,7 @@ function changeTab(_: string, view: string, show: boolean) {
         !Option.get('close_ga') &&
         !dev
     ) {
-        Umami.trackPageView('/' + view)
+        umTrackPageView('/' + view)
     }
     tags.showChat = show
     tags.page = view
@@ -613,6 +628,7 @@ function changeTab(_: string, view: string, show: boolean) {
     const optTab = document.getElementsByClassName('opt-main-tab')[0] as HTMLDivElement
     switch (view) {
         case 'Options': {
+            optionsMounted.value = true
             Connector.send('get_version_info', {}, 'getVersionInfo')
             if (optTab) {
                 optTab.style.opacity = '1'
@@ -633,36 +649,6 @@ function barMainClick() {
     } else {
         changeTab('主页', 'Home', false)
     }
-}
-
-/**
- * 水波动画启动器
- * @param wave HTML 对象
- * @returns 动画循环器对象
- */
-function waveAnimation(wave: HTMLElement | null) {
-    if (wave) {
-        const waves = wave.children[1].children
-        const min = 20
-        const max = 195
-        const add = 1
-        const timer = setInterval(() => {
-            // 遍历波浪体
-            for (let i = 0; i < waves.length; i++) {
-                const now = waves[i].getAttribute('x')
-                if (Number(now) + add > max) {
-                    waves[i].setAttribute('x', min.toString())
-                } else {
-                    waves[i].setAttribute(
-                        'x',
-                        (Number(now) + add).toString(),
-                    )
-                }
-            }
-        }, 50)
-        return timer
-    }
-    return -1
 }
 
 /**
@@ -783,12 +769,14 @@ function saveAutoConnect(event: Event) {
  * 快速关闭弹窗（点击空白处关闭）
  * @param allow 是否允许快速关闭
  */
-function popQuickClose(allow: boolean | undefined) {
+async function popQuickClose(allow: boolean | undefined) {
     if (allow != false) {
         uiStore.popBoxList[0]?.onClose?.()
         uiStore.popBoxList.shift()
     } else {
         const animeBody = document.getElementById('pop-box')
+        // animejs 只在弹窗禁止快速关闭时用到，按需加载避免进主包
+        const { default: anime } = await import('animejs')
         const timeLine = anime.timeline({ targets: animeBody })
         // 使用 animejs 实现一个沿中心左右摇晃的动画，摇晃三次
         timeLine.add({
@@ -850,13 +838,28 @@ onMounted(() => {
     document.addEventListener('click', handleClickOutside)
     window.addEventListener('resize', updateLayoutState)
     updateLayoutState()
-    refreshCurrentMusic()
-    musicSyncTimer = window.setInterval(() => {
-        refreshCurrentMusic()
-    }, 1000)
+    // 音乐状态是响应式的，直接 watch；不再每秒轮询刷新（之前每秒都会
+    // 重建 currentMusic 对象并重算封面色调，造成持续的无谓重渲染）
+    watch(() => getCurrentMusic(), (music) => {
+        if (music) {
+            musicPlayerMounted.value = true
+        }
+        void refreshCurrentMusic()
+    }, { immediate: true, deep: true })
+
+    // 音乐消息要求打开播放器面板（面板是懒挂载的，组件未挂载时 emit 接不到）
+    watch(openPanelRequest, (val) => {
+        if (val) {
+            openPanelRequest.value = false
+            toggleMusicPlayer(true)
+        }
+    })
 
     // 监听 FileManager 面板状态
     watch(() => panelVisible.value, (val) => {
+        if (val) {
+            fileManagerMounted.value = true
+        }
         tags.showFileManager = val
     })
     watch(showFileManagerEntry, (val) => {
@@ -865,8 +868,27 @@ onMounted(() => {
         }
     }, { immediate: true })
 
-    // 页面加载完成后
-    window.onload = async () => {
+    // 初始化入口：Vue 挂载完成后 DOM 已就绪，不必再等 window.onload
+    // （onload 会被图片等子资源拖住，曾导致整个初始化被推迟数秒；
+     // 且若 load 事件先于监听注册触发，初始化将永远不会执行）
+    void initApp()
+
+    // 页面关闭前
+    window.onbeforeunload = () => {
+        logger.system('开发者阁下—— 唔，阁下离开的太匆忙了！让我来帮开发者阁下收拾下东西吧。')
+        new Notify().clear()
+        if(import.meta.env.DEV) {
+            Connector.close()
+        }
+    }
+})
+
+/**
+ * 应用初始化（原 window.onload 回调，挂载后直接执行）
+ */
+async function initApp() {
+    const logger = new Logger()
+    {
         await backend.init() // Desktop：初始化客户端功能
 
         if(import.meta.env.DEV) {
@@ -876,10 +898,6 @@ onMounted(() => {
             // eslint-disable-next-line
             console.log('[ SSystem Bootloader Complete took ' + (new Date().getTime() - uptime) + 'ms, welcome to ssqq on stapxs-qq-lite.user ]')
         }
-        // 初始化波浪动画
-        setLoginWaveTimer(waveAnimation(
-            document.getElementById('login-wave'),
-        ))
         // AMAP：初始化高德地图
         window._AMapSecurityConfig = import.meta.env.VITE_APP_AMAP_SECRET
         // =============================================================
@@ -889,7 +907,8 @@ onMounted(() => {
         // 加载开发者相关功能
         if (dev) {
             document.title = 'Stapxs QQ Lite (Dev)'
-            // 布局检查工具
+            // 布局检查工具（开发用，按需加载，不进主包）
+            const { default: Spacing } = await import('spacingjs/src/spacing')
             Spacing.start()
             // FPS 检查
             rafLoop()
@@ -903,6 +922,9 @@ onMounted(() => {
         }
         settingsStore.sysConfig = loadedConfig
         if (!migratedBackground) hydrateBackgroundImage(settingsStore.sysConfig.chat_background)
+        // 音乐播放器的设置项由播放器组件懒挂载，这里提前注册，避免没播放过
+        // 音乐的会话看不到这组设置（注册按 id 幂等，组件挂载后重复注册无副作用）
+        await registerMusicPlayerOptions()
         if(dev) {
             logger.debug('stapxs-qq-lite.su:$/mnt/boot/dawnHunt/bin/core --pour /mnt/app/bin/main', true)
             logger.system('[ dawnHuntCore Version: 1.0 Beta, dawnHuntDB: 2025-04-24 ]')
@@ -1070,7 +1092,7 @@ onMounted(() => {
             } else if(napcat) {
                 config.hostName = 'napcat.stapxs.cn'
             }
-            Umami.initialize(config)
+            initializeUmami(config)
             // 上报一些应用基础信息
             App.sendIdentifyData({
                 'app_version': import.meta.env.VITE_APP_CLIENT_TAG + ',' + packageInfo.version,
@@ -1122,24 +1144,35 @@ onMounted(() => {
             backend.call(undefined, 'win:setTitle', false, title)
         }
     }
-    // 页面关闭前
-    window.onbeforeunload = () => {
-        logger.system('开发者阁下—— 唔，阁下离开的太匆忙了！让我来帮开发者阁下收拾下东西吧。')
-        new Notify().clear()
-        if(import.meta.env.DEV) {
-            Connector.close()
+
+    // 闲时预取按需拆出去的页面 chunk：首屏不背它们的体积，等用户真正点开时
+    // （切设置页、开第一个会话）也不必再等网络下载，直接命中模块缓存
+    const prefetchOnIdle = (loader: () => Promise<unknown>) => {
+        const ric = (window as unknown as {
+            requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void
+        }).requestIdleCallback
+        if (ric) {
+            ric(() => { void loader() }, { timeout: 4000 })
+        } else {
+            setTimeout(() => { void loader() }, 1500)
         }
     }
-})
+    prefetchOnIdle(() => import('@renderer/pages/Messages.vue'))
+    prefetchOnIdle(() => import('@renderer/pages/Friends.vue'))
+    prefetchOnIdle(() => import('@renderer/pages/Options.vue'))
+    // 登录成功后的下一个动作几乎一定是点开一个会话，提前把聊天面板拉下来
+    watch(() => loginInfo.status, (status) => {
+        if (status) {
+            prefetchOnIdle(() => import('@renderer/pages/Chat.vue'))
+            prefetchOnIdle(() => import('@renderer/pages/Qzone.vue'))
+        }
+    }, { immediate: true })
+}
 
 onUnmounted(() => {
     // 移除全局点击事件监听器
     document.removeEventListener('click', handleClickOutside)
     window.removeEventListener('resize', updateLayoutState)
-    if (musicSyncTimer > 0) {
-        clearInterval(musicSyncTimer)
-        musicSyncTimer = -1
-    }
 })
 
 //#endregion

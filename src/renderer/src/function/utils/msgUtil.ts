@@ -1,6 +1,5 @@
 import jp from 'jsonpath'
 import app from '@renderer/main'
-import anime from 'animejs'
 import option from '@renderer/function/option'
 
 import { Logger, PopInfo, PopType } from '@renderer/function/base'
@@ -689,13 +688,15 @@ export function canGroupNotice(id: number) {
  * @param animeBody 动画作用的元素
  * @param windowInfo 窗口信息，在 electron 中使用
  */
-export function pokeAnime(animeBody: HTMLElement | null, windowInfo = null as {
+export async function pokeAnime(animeBody: HTMLElement | null, windowInfo = null as {
     x: number
     y: number
     width: number
     height: number
 } | null) {
     if (animeBody) {
+        // animejs 只在这里用到，按需加载，避免它进主包拖慢首屏
+        const { default: anime } = await import('animejs')
         const timeLine = anime.timeline({ targets: animeBody })
         // 如果窗口小于 500px 播放完整的动画（手机端样式）
         if (
@@ -1047,6 +1048,22 @@ export function firstScreenMsgCount(msgs: any[]): number {
 }
 
 /**
+ * 等尺寸的上限（毫秒）：打开会话 / 整页替换。这一刻列表还没上屏，等的是首屏占位框，
+ * 值得多等一会；但 Signal / Telegram 能「零等待」是因为宽高跟着消息元数据一起走，
+ * OneBot 段里没有宽高、尺寸只能去网络上现量 —— 等待时长由网络决定，不设上限就等于
+ * 让「会话什么时候打开」听命于最慢的那张图。
+ */
+export const PRELOAD_WAIT_CAP_OPEN_MS = 1500
+/**
+ * 等尺寸的上限（毫秒）：来新消息。消息到达的延迟是即时通讯里最显眼的卡顿，
+ * 所以这里只给快速探测（本地反代的一次 Range 往返，实测中位在几百毫秒以内）留窗口；
+ * 慢于上限就不等了 —— 消息立刻上屏、先顶预估框（MsgBody.preSize 的 estimate 分支），
+ * 探测在后台继续，量到后框响应式地换成真实比例，纠正量被预估框压住、再由 chatViewport
+ * 锚定兜住。
+ */
+export const PRELOAD_WAIT_CAP_LIVE_MS = 600
+
+/**
  * 把一批消息里所有还没量到尺寸的远端图片先加载一遍。这一步必须跑在这些消息进列表
  * 之前 —— 测量晚一步，那一行出生就没有占位框，解码时才长高，而长在视口里的那一段
  * 没有任何补滚动的位置能救（见 MsgBody.preSize 的注释）。
@@ -1066,8 +1083,16 @@ export function firstScreenMsgCount(msgs: any[]): number {
  * 只由第一拨决定。
  *
  * waitCount 默认整批都等，也就是不传时的行为跟以前一致。
+ *
+ * waitCapMs 是等待的上限（默认无上限，保持老行为）。超时不是放弃：探测在后台继续，
+ * 量到后 imageInfos 是响应式的，占位框自动换成真实比例 —— 超时的代价只是一次幅度
+ * 被预估框压住的纠正，而不是「消息永远不来」。
  */
-export async function preloadImageSizesForMsgs(msgs: any[], waitCount = msgs.length): Promise<void> {
+export async function preloadImageSizesForMsgs(
+    msgs: any[],
+    waitCount = msgs.length,
+    waitCapMs = Number.POSITIVE_INFINITY,
+): Promise<void> {
     // 用户开了手动加载就不该替他下载任何东西，占位块才是他的入口
     const settingsStore = useSettingsStore()
     if (settingsStore.sysConfig.opt_no_auto_load_image === true) return
@@ -1086,12 +1111,31 @@ export async function preloadImageSizesForMsgs(msgs: any[], waitCount = msgs.len
     const first = urls.filter(url => waiting.has(url))
     const rest = urls.filter(url => !waiting.has(url))
 
+    if (first.length === 0) {
+        for (const url of rest) void preloadImageSize(url)
+        return
+    }
+
     // 第一拨：map 是同步跑完的，所以这一圈就把 img.src 按顺序全发出去，占住那 6 条连接。
     // 不加显式并发限制：浏览器自己会排队，再叠一层只会多一份状态。
-    await Promise.all(first.map(url => preloadImageSize(url)))
+    const firstDone = Promise.all(first.map(url => preloadImageSize(url)))
 
-    // 第二拨：视口外的，等第一拨落定之后再开始点着，不占上面那段等待。
-    for (const url of rest) void preloadImageSize(url)
+    // 第二拨：视口外的，等第一拨真正落定之后再点着（注意是 firstDone 而不是下面那个
+    // 带上限的等待 —— 超时放行的是调用方，不是探测本身，这一拨照旧不占第一拨的连接）。
+    void firstDone.then(() => {
+        for (const url of rest) void preloadImageSize(url)
+    })
+
+    // 等第一拨，但只等到上限。超时后调用方拿预估框先把消息放上屏；探测继续跑，
+    // 量到的那一下框再换成真实比例（响应式，见 MsgBody.preSize）。
+    if (waitCapMs < Number.POSITIVE_INFINITY) {
+        await Promise.race([
+            firstDone,
+            new Promise(resolve => setTimeout(resolve, waitCapMs)),
+        ])
+    } else {
+        await firstDone
+    }
 }
 
 /**

@@ -16,8 +16,15 @@
 
 <script setup lang="ts">
 import { Logger } from '@renderer/function/base'
-import { ElAmap, ElAmapMarker } from '@vuemap/vue-amap'
+import { ElAmap, ElAmapMarker, initAMapApiLoader } from '@vuemap/vue-amap'
 import * as z from 'zod'
+
+// 高德地图 SDK 体积不小，延迟到真正渲染位置消息时才加载
+// PS：initAMapApiLoader 内部有防重复初始化守卫，多调几次没关系
+initAMapApiLoader({
+    key: import.meta.env.VITE_APP_AMAP_KEY,
+    securityJsCode: import.meta.env.VITE_APP_AMAP_SECRET,
+})
 
 const { data: jsonData, id } = defineProps<{
     data: string,

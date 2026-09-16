@@ -591,6 +591,23 @@ textarea:focus {
 }
 .wave-pan > svg > g > use {
     opacity: 0.5;
+    /* 波浪漂移：纯 CSS 动画，走合成器；替代原 20Hz 的 setInterval 改 x 属性方案，
+     * 那个方案每 50ms 触发一次 SVG 重排，登录页全程空转 */
+    animation: login-wave-move 8.75s linear infinite;
+}
+@keyframes login-wave-move {
+    from {
+        transform: translateX(0);
+    }
+
+    to {
+        transform: translateX(175px);
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .wave-pan > svg > g > use {
+        animation: none;
+    }
 }
 .wave-pan > svg > g > use:last-child {
     opacity: 1;
