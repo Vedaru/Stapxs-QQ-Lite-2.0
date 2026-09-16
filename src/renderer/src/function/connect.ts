@@ -111,16 +111,26 @@ function clearReconnectTimer() {
 }
 
 /**
- * 延迟重连。
+ * 延迟重连，同时负责自动重连的次数记账。
  * 原先的非正常关闭分支直接递归调用 create()，失败时会立刻再次进入同一分支，
  * 形成无间隔的拨号风暴；这里改为按重试次数指数退避。
+ * PS：计数和上限都只在这里处理。create() 是自动重连和手动连接共用的入口，
+ * 把上限放在入口上会连手动连接一起挡掉。
  */
 function scheduleReconnect(address: string, token: string | undefined, wss: boolean | undefined) {
     // 已经有排队中的重连就不再重复排队（connected 事件可能被连续触发）
     if (reconnectTimer !== undefined) return
+    // 自动重连达到上限，放弃本次重连。计数一并归零，否则这个历史值会一直卡在
+    // 上限之外，用户之后手动重连也得刷新页面才能再连上
+    if (retry > 5) {
+        retry = 0
+        login.creating = false
+        return
+    }
     const delay = RECONNECT_BASE_DELAY * Math.pow(2, Math.min(retry, 5))
     reconnectTimer = window.setTimeout(() => {
         reconnectTimer = undefined
+        retry++
         Connector.create(address, token, wss)
     }, delay)
 }
@@ -188,17 +198,11 @@ export class Connector {
             }
             return
         } else {
-            // PS：retry 的归零交给 onopen（连接成功）处理，这里不再根据 wss 是否
-            // 为空来判断“首次连接”。原先的写法会让重连路径（wss == undefined）
-            // 把计数清零，连接反复失败时上限就永远触发不了
-            if (wss != undefined) {
-                retry++
-            }
-            // 最多自动重试连接五次
-            if (retry > 5) {
-                login.creating = false
-                return
-            }
+            // PS：自动重连的次数记账与上限（最多重连五次）都在 scheduleReconnect
+            // 里，create() 不再碰 retry。原先用 wss 是否为空来区分“首次连接”的
+            // 写法两头都不对：重连路径传的恰好是 undefined，会把计数清零，上限
+            // 永远触发不了；而手动连接传的也是 undefined，反过来会被上限挡住，
+            // 点连接按钮没反应。连接成功的归零交给 onopen。
 
             let url = appendAccessToken(withWebSocketProtocol(address, false), token)
             if (address.startsWith(WS_PROTOCOL) || address.startsWith(WSS_PROTOCOL)) {
@@ -358,7 +362,9 @@ export class Connector {
             case 1015: {
                 // TLS 错误，尝试使用 ws 连接
                 popInfo.add(PopType.ERR, $t('连接失败') + ': ' + $t('TLS错误'), false)
-                this.create(address, token, false)
+                // PS：这里原先也是无间隔地直接再拨号，同样会形成拨号风暴，一起
+                // 走退避重连
+                scheduleReconnect(address, token, false)
                 break
             }
             default: {
