@@ -667,11 +667,13 @@ function jumpToReply(id: string) {
 
 /**
  * 这一行的回复目标还没在手上就返回要补拉的 id，否则返回空串。
- * 只看「在不在分页窗口里」：缓存里已经有、或者已经确认拿不到的，都不再请求。
+ * 只看「在不在分页窗口 / 开着的合并转发里」：缓存里已经有、或者已经确认拿不到的，
+ * 都不再请求。
  */
 function replyPreviewNeed(message_id: string) {
     if (!message_id) return ''
     if (chatStore.messageList.some((item) => item.message_id == message_id)) return ''
+    if (findInMergeStack(message_id)) return ''
     if (chatStore.replyPreviewMap.has(String(message_id))) return ''
     return String(message_id)
 }
@@ -1050,7 +1052,35 @@ function hiddenUserInfo() {
 }
 
 /**
- * 按 id 找一条消息：先看分页窗口，再看回复预览的补拉缓存。
+ * 在开着的合并转发内容里找一条消息。
+ *
+ * 为什么要翻这里：转发的就是一整段聊天记录，转发里的回复，被引用的那条多半就躺在
+ * 同一份转发内容里；而主聊天列表里反而多半没有它（那段记录发生在别的时间/别的群）。
+ * 嵌套转发（content 里再套 content）也一起走 —— 打开第二层转发时它已经被推进
+ * mergeMsgStack，但第一层里的回复也可能引用嵌套层里的消息。
+ */
+function findInMergeStack(message_id: string): any {
+    const walkMsgs = (msgs: any[]): any => {
+        for (const m of msgs ?? []) {
+            if (m?.message_id == message_id) return m
+            for (const seg of m?.message ?? []) {
+                if (Array.isArray(seg?.content)) {
+                    const hit = walkMsgs(seg.content)
+                    if (hit) return hit
+                }
+            }
+        }
+        return undefined
+    }
+    for (const stackData of chatStore.mergeMsgStack) {
+        const hit = walkMsgs(stackData.messageList)
+        if (hit) return hit
+    }
+    return undefined
+}
+
+/**
+ * 按 id 找一条消息：先看分页窗口，再看开着的合并转发内容，最后看回复预览的补拉缓存。
  * 缓存里 null 表示确认拿不到，此时返回 null，预览保持占位。
  */
 function findMsg(message_id: string) {
@@ -1058,6 +1088,8 @@ function findMsg(message_id: string) {
         return item.message_id == message_id
     })
     if (list.length === 1) return list[0]
+    const inMerge = findInMergeStack(message_id)
+    if (inMerge) return inMerge
     return chatStore.replyPreviewMap.get(String(message_id)) ?? null
 }
 

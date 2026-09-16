@@ -62,19 +62,28 @@ export function scrollToMsg(seqName: string, showAnimation: boolean, showHighlig
         if (pan !== null) {
             // #msgPan 是反转流向（column-reverse）：scrollTop 0 在底部、往上为负，
             // 所以不能再拿「元素 offsetTop」这种从顶部算起的坐标去赋值，只能改用
-            // 视口坐标现算。目标：让消息顶边落在面板顶边下方 10px 处。
+            // 视口坐标现算。目标：让消息的垂直中线落在面板的垂直中线上 —— 跳转
+            // 之后用户的视线在屏幕中央，上下文上下都看得见；停在顶边的话，想往
+            // 前翻一句还得再滚一次。
             //
             // 内容在屏幕上的位置由 gap（离底多远）决定：gap 增大 → 视口朝远端移 →
             // 内容整体下移；减小则上移。所以「当前 gap + 要挪的距离」就是目标 gap。
-            // panRect.bottom - msgRect.top 是消息顶边离面板底边多远；减掉一个
-            // clientHeight 就换算成「从面板顶边起算」，再加那 10px 边距。
+            // panRect.bottom - msgRect.top 是消息顶边离面板底边多远；中线要对到
+            // clientHeight / 2 处，一共要挪 (底边距) - (面板高 + 消息高) / 2。
+            //
+            // 消息比面板还高时居中会把头尾都切掉，退回顶边对齐（顶边下方 10px）。
             //
             // 读写都走 chatViewport 里那两个函数：反转流的符号、越界夹紧、以及「补偿
             // 必须瞬时、主动跳转才平滑」这条约定都只有那一份实现，这里不再自己算一遍。
+            // 越界（目标太靠头/尾，居中所需的 gap 够不到）由 writePanGap 夹紧，
+            // 消息会停在能到的最靠中位置。
             const panRect = pan.getBoundingClientRect()
             const msgRect = msg.getBoundingClientRect()
-            const target =
-                panGap(pan) + (panRect.bottom - msgRect.top) - pan.clientHeight + 10
+            const fromBottom = panRect.bottom - msgRect.top
+            let target = panGap(pan) + fromBottom - (pan.clientHeight + msgRect.height) / 2
+            if (msgRect.height >= pan.clientHeight) {
+                target = panGap(pan) + fromBottom - pan.clientHeight + 10
+            }
             writePanGap(pan, target, showAnimation)
             if (showHighlight) {
                 msg.style.transition = 'background 1s'

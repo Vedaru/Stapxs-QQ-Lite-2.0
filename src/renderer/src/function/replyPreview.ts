@@ -24,7 +24,11 @@ const vReplyBackfill: ObjectDirective<HTMLElement, string> = {
                     if (id) requestReplyPreview(id)
                 })
             }, {
-                root: document.getElementById('msgPan'),
+                // root 不能钉在 #msgPan 上：合并转发面板（MergePan）不是它的子节点，
+                // 面板里的回复行和它以它为根永远算不出交叉，补拉一次都发不出去 ——
+                // 转发里的引用就永远停在「（查看回复消息）」。用视口做根两边都覆盖
+                // （#msgPan 本身就几乎铺满视口，触发时机几乎不变）。
+                root: null,
                 // 只在「上面」放宽：旧消息是从视口顶边翻出来的，提前一屏半屏拉好，
                 // 滚到位时通常已经补完。底部不放宽是有意的 —— 补拉会让这一行长高，
                 // 而增长发生在视口下方时，整屏可见内容会被往上顶一截；只在视口内或
