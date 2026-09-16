@@ -28,6 +28,10 @@ const popInfo = new PopInfo()
 
 let retry = 0
 let forceCloseReason: string | undefined = undefined
+// 重连退避：非正常断开后延迟再拨号，避免连接反复失败时无间隔地重试
+let reconnectTimer: number | undefined = undefined
+// 退避基础间隔（毫秒），每次重试翻倍
+const RECONNECT_BASE_DELAY = 1000
 
 export let websocket: WebSocket | undefined = undefined
 const WS_PROTOCOL = 'ws' + '://'
@@ -99,6 +103,28 @@ class TimeoutError extends Error {
     }
 }
 
+function clearReconnectTimer() {
+    if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer)
+        reconnectTimer = undefined
+    }
+}
+
+/**
+ * 延迟重连。
+ * 原先的非正常关闭分支直接递归调用 create()，失败时会立刻再次进入同一分支，
+ * 形成无间隔的拨号风暴；这里改为按重试次数指数退避。
+ */
+function scheduleReconnect(address: string, token: string | undefined, wss: boolean | undefined) {
+    // 已经有排队中的重连就不再重复排队（connected 事件可能被连续触发）
+    if (reconnectTimer !== undefined) return
+    const delay = RECONNECT_BASE_DELAY * Math.pow(2, Math.min(retry, 5))
+    reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined
+        Connector.create(address, token, wss)
+    }, delay)
+}
+
 export class Connector {
     /**
      * 创建 Websocket 连接
@@ -162,10 +188,10 @@ export class Connector {
             }
             return
         } else {
-            // PS：只有在未设定 wss 类型的情况下才认为是首次连接
-            if (wss == undefined) {
-                retry = 0
-            } else {
+            // PS：retry 的归零交给 onopen（连接成功）处理，这里不再根据 wss 是否
+            // 为空来判断“首次连接”。原先的写法会让重连路径（wss == undefined）
+            // 把计数清零，连接反复失败时上限就永远触发不了
+            if (wss != undefined) {
                 retry++
             }
             // 最多自动重试连接五次
@@ -221,6 +247,9 @@ export class Connector {
     static onopen(address: string, token: string | undefined) {
         const settingsStore = useSettingsStore()
         logger.add(LogType.WS, '连接成功')
+        // 连接成功，重试计数归零并作废排队中的重连
+        retry = 0
+        clearReconnectTimer()
         // 保存登录信息
         Option.save('address', address)
         // 保存密钥
@@ -317,12 +346,12 @@ export class Connector {
             case 1006: {
                 // 非正常关闭，尝试重连
                 popInfo.add(PopType.ERR, $t('连接失败') + ': ' + $t('连接异常关闭'), false)
+                // PS：由于创建连接失败也会触发此事件，所以需要判断是否已经登录
+                // 尝试使用 ws 连接
                 if (login.status) {
-                    this.create(address, token, undefined)
+                    scheduleReconnect(address, token, undefined)
                 } else {
-                    // PS：由于创建连接失败也会触发此事件，所以需要判断是否已经登录
-                    // 尝试使用 ws 连接
-                    this.create(address, token, false)
+                    scheduleReconnect(address, token, false)
                 }
                 break
             }
@@ -356,6 +385,8 @@ export class Connector {
         }
         connectionStore.metaEventTimeoutTriggered = false
         forceCloseReason = undefined
+        // 主动断开时作废排队中的重连，避免断开后又被自动连回来
+        clearReconnectTimer()
 
         if(!backend.isWeb()) {
             backend.call('Onebot', 'onebot:close', false)
